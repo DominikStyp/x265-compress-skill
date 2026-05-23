@@ -33,35 +33,35 @@ scripts run standalone from any shell.
 - Python 3.9+ (standard library only — no `pip install` step)
 - `ffmpeg` and `ffprobe` on PATH (and `python3` on PATH on POSIX)
 
-## Installing as a Claude Code skill
+## Install
 
-Clone into your local skills directory so Claude Code auto-discovers it
-via the `name:` / `description:` frontmatter in `SKILL.md`:
+One-liner that clones the repo into your Claude Code skills directory
+and runs the bundled installer (which checks Python, offers to install
+ffmpeg via `brew` / `apt` / `dnf` / `winget` if it's missing, and runs
+a smoke import test):
+
+**macOS / Linux**
 
 ```bash
-# macOS / Linux
-mkdir -p ~/.claude/skills
-git clone git@github.com:DominikStyp/x265-compress-skill.git \
-  ~/.claude/skills/ffmpeg-compress-video
+git clone git@github.com:DominikStyp/x265-compress-skill.git ~/.claude/skills/ffmpeg-compress-video && bash ~/.claude/skills/ffmpeg-compress-video/install.sh
 ```
+
+**Windows (PowerShell)**
 
 ```powershell
-# Windows
-mkdir "$env:USERPROFILE\.claude\skills" -Force
-git clone git@github.com:DominikStyp/x265-compress-skill.git `
-  "$env:USERPROFILE\.claude\skills\ffmpeg-compress-video"
+git clone git@github.com:DominikStyp/x265-compress-skill.git "$env:USERPROFILE\.claude\skills\ffmpeg-compress-video"; if ($?) { powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\skills\ffmpeg-compress-video\install.ps1" }
 ```
 
-Restart Claude Code (or run `/skills` to refresh). After install, the skill
-activates automatically on prompts like *"compress this video"*,
-*"shrink this mp4"*, *"transcode to mkv"*. See
-[`SKILL.md`](SKILL.md#agent-playbook--single-prompt-to-queue-running) for
-the agent decision tree and
-[`docs/AGENT_QUEUE_RECIPES.md`](docs/AGENT_QUEUE_RECIPES.md) for
-paste-ready `queue.json` templates.
+Pass `--yes` (POSIX) or `-Yes` (PowerShell) to the installer to skip
+every confirmation prompt — useful for automation / CI.
 
-Standalone use (no Claude Code) is also fine — clone anywhere, run the
-scripts directly.
+After install, restart Claude Code (or run `/skills` to refresh). The
+skill activates automatically via the `name:` / `description:`
+frontmatter in `SKILL.md` on prompts like *"compress this video"*,
+*"shrink this mp4"*, *"compress everything in this folder"*.
+
+Standalone use without Claude Code is also fine — clone anywhere, run
+the installer, then invoke `compress.py` / `run_queue.py` directly.
 
 ## Quick start
 
