@@ -179,8 +179,15 @@ def concat_chunks(workdir: Path, dst: Path) -> None:
         "\n".join(f"file '{c.resolve().as_posix()}'" for c in encs) + "\n",
         encoding="utf-8",
     )
+    # -fflags +genpts regenerates clean monotonic PTS/DTS during the
+    # concat copy. Without it, per-chunk DTS quirks at chunk seams trip
+    # verify_output's `-xerror` decode walk; dts_recovery then has to run
+    # a costly MPEG-TS roundtrip (~5 min on a 2.5 GB output) to clean
+    # them up. Setting +genpts preemptively prevents that on most files,
+    # and is no-op when timestamps are already clean.
     r = subprocess.run(wrap_cmd_for_low_priority([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-fflags", "+genpts",
         "-f", "concat", "-safe", "0",
         "-i", str(concat_list),
         "-c", "copy",

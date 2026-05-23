@@ -159,6 +159,23 @@ $env:PYTHONIOENCODING = "utf-8"
 & python "$SkillDir\_smoke_test.py" $SkillDir
 
 # ---------------------------------------------------------------------------
+# Step 4b: Stamp the install with the current commit SHA. Helps bug
+# reports identify the exact build.
+# ---------------------------------------------------------------------------
+if (Test-Path "$SkillDir\.git") {
+    try {
+        Push-Location $SkillDir
+        $sha = (git rev-parse HEAD 2>$null) -join ""
+        if ($sha) {
+            Set-Content -LiteralPath "$SkillDir\version.txt" -Value $sha -Encoding utf8 -NoNewline
+        }
+    } catch {
+    } finally {
+        Pop-Location
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Step 5: Where it lives + next steps
 # ---------------------------------------------------------------------------
 Write-Info "Installation complete."

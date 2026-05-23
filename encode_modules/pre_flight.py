@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
+from .verify import _run_decode_walk
 
 
 def _probe_duration(src: Path) -> float:
@@ -93,35 +93,20 @@ def _write_cache(src: Path, result: dict) -> None:
 def _walk_one_window(src: Path, start_s: float, dur_s: float,
                     timeout_s: int) -> dict:
     """Decode-walk one [start, start+dur) window with `-xerror`. Returns
-    {decode_exit_code, error_count, error_samples} so the caller can decide
-    whether THIS window is safe. Designed to be cheap on clean content
-    (~1-2s for a 60-s 4K window) and fail-fast on broken content."""
-    t0 = time.monotonic()
-    try:
-        r = subprocess.run(
-            wrap_cmd_for_low_priority(
-                ["ffmpeg", "-v", "error", "-hide_banner", "-xerror",
-                 "-ss", f"{start_s}", "-i", str(src),
-                 "-t", f"{dur_s}",
-                 "-map", "0:v?", "-map", "0:a?",
-                 "-f", "null", "-"]
-            ),
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=timeout_s,
-            **low_priority_popen_kwargs(),
-        )
-        rc = r.returncode
-        err_text = r.stderr or ""
-    except subprocess.TimeoutExpired as e:
-        rc = -1  # sentinel for timeout
-        err_text = (e.stderr or b"").decode("utf-8", errors="replace") \
-            if isinstance(e.stderr, (bytes, bytearray)) else (e.stderr or "")
-    lines = [l.strip() for l in err_text.splitlines() if l.strip()]
+    {decode_exit_code, error_count, error_samples, elapsed_seconds} so the
+    caller can decide whether THIS window is safe. Cheap on clean content
+    (~1-2s for a 60-s 4K window); fail-fast on broken content.
+
+    Delegates to `verify._run_decode_walk` — one canonical implementation
+    of the -xerror walk shared across pre-flight, post-encode verify, and
+    chunk auto-fix verification."""
+    r = _run_decode_walk(src, timeout_s=timeout_s,
+                         start_s=start_s, dur_s=dur_s, max_samples=8)
     return {
-        "decode_exit_code": rc,
-        "error_count": len(lines),
-        "error_samples": [l[:240] for l in lines[:8]],
-        "elapsed_seconds": round(time.monotonic() - t0, 2),
+        "decode_exit_code": r["decode_exit_code"],
+        "error_count": r["error_count"],
+        "error_samples": r["error_samples"],
+        "elapsed_seconds": r["elapsed_seconds"],
     }
 
 

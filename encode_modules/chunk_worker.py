@@ -22,6 +22,10 @@ from pathlib import Path
 from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
 from .chunking import ffmpeg_chunk_cmd
+# Note: chunk_recovery was previously imported lazily inside the function
+# body to dodge a circular dependency. The cycle was resolved in the
+# encoder.py refactor — top-level import is safe and shaves a small import
+# cost off every chunk encode.
 from .chunk_recovery import _quarantine_part
 from .display import ParallelDisplay
 from .history_state import record_chunk_elapsed

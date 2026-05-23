@@ -235,6 +235,16 @@ info "Verifying skill imports..."
 PYTHONIOENCODING=utf-8 python3 "$SKILL_DIR/_smoke_test.py" "$SKILL_DIR"
 
 # ---------------------------------------------------------------------------
+# Step 4b: Stamp the install with the current commit SHA. Helps bug
+# reports identify the exact build (plugin.json has the published
+# version; version.txt has the specific commit — useful when a user
+# is on master between releases).
+# ---------------------------------------------------------------------------
+if [ -d "$SKILL_DIR/.git" ]; then
+    git -C "$SKILL_DIR" rev-parse HEAD > "$SKILL_DIR/version.txt" 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
 # Step 5: Where it lives + next steps
 # ---------------------------------------------------------------------------
 info "Installation complete."

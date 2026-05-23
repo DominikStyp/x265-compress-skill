@@ -127,9 +127,17 @@ def _apply_tune_overrides(params: list[str], anime: bool, grain: bool,
         return ["tune=animation"]
     if grain:
         notes.append("Grain mode: using x265 :tune=grain (preserves film grain).")
-        filtered = [p for p in params
-                    if not p.startswith(("psy-rdoq", "aq-strength"))]
-        return filtered + ["tune=grain"]
+        # tune=grain itself bumps aq-strength and disables psy-rdoq —
+        # remove ours so x265's tune wins on those knobs. Also drop the
+        # expensive motion-search defaults (me=star + merange=57): tune=grain
+        # benefits from a less aggressive ME because exhaustive subpixel
+        # refinement can fight the tune's flat-grain preservation. me=umh +
+        # merange=32 matches x265 docs' recommendation when grain matters.
+        filtered = [
+            p for p in params
+            if not p.startswith(("psy-rdoq", "aq-strength", "me=", "merange="))
+        ]
+        return filtered + ["me=umh", "merange=32", "tune=grain"]
     return params
 
 

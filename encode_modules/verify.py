@@ -28,30 +28,49 @@ from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 from .probes import fmt_dur, probe_duration, probe_full
 
 
-def decode_walk_chunk(chunk_path: Path, *,
-                     timeout_s: int = 120) -> dict:
-    """Decode-walk a single encoded chunk to confirm it's mergeable with
-    other chunks via concat. Used after an --auto-fix-choke retry to make
-    sure the fix didn't just produce a different flavor of broken output.
+def _run_decode_walk(path: Path, *,
+                    timeout_s: int,
+                    start_s: float | None = None,
+                    dur_s: float | None = None,
+                    max_samples: int = 8) -> dict:
+    """Run ffmpeg in decode-walk mode and return a structured result.
 
-    Returns {ok: bool, decode_exit_code: int, error_count: int, error_samples: [...],
-             duration_seconds: float, elapsed_seconds: float, timed_out: bool}.
+    Single shared implementation behind `decode_walk_chunk`, `analyze_chunk_errors`,
+    `_decode_check`, and `pre_flight._walk_one_window` — they previously each
+    had their own near-identical copy of this code, with subtle drift risk
+    every time one of them got a fix the others didn't.
 
-    "Mergeable" means: ffmpeg can decode every frame + audio sample with
-    -xerror set (no error concealment fallback hiding silent corruption).
-    Identical check to what verify_output's decode pass would do on the
-    final merged file — just narrowed to one chunk."""
+    `-xerror` makes ffmpeg fast-fail on the first hard error rather than
+    scanning the rest of the file, so a bad input is detected quickly while
+    a healthy one still pays the full decode cost (~5-10x faster than
+    real-time for HEVC at low bitrate). The `-map 0:v? -map 0:a?` selectors
+    cover the common case where a file has either no video or no audio.
+
+    `start_s` + `dur_s` (both None or both set) crop the walk to a window —
+    used by pre-flight to find which chunk-sized window of a source has
+    bitstream errors. Both None walks the whole file.
+
+    Result keys (always present):
+        ok               True iff exit_code == 0 AND no stderr AND not timed_out
+        decode_exit_code ffmpeg's exit code (None on Popen-level failure)
+        error_count      number of non-empty stderr lines (decoder errors)
+        error_samples    first `max_samples` lines verbatim (truncated to 240 chars each)
+        elapsed_seconds  wall time of the walk
+        timed_out        True if killed by timeout_s
+    """
+    args = ["ffmpeg", "-v", "error", "-hide_banner", "-xerror"]
+    if start_s is not None:
+        args += ["-ss", f"{start_s}"]
+    args += ["-i", str(path)]
+    if dur_s is not None:
+        args += ["-t", f"{dur_s}"]
+    args += ["-map", "0:v?", "-map", "0:a?", "-f", "null", "-"]
+
     t0 = time.monotonic()
     timed_out = False
-    duration_seconds = probe_duration(chunk_path)
     try:
         r = subprocess.run(
-            wrap_cmd_for_low_priority(
-                ["ffmpeg", "-v", "error", "-hide_banner", "-xerror",
-                 "-i", str(chunk_path),
-                 "-map", "0:v?", "-map", "0:a?",
-                 "-f", "null", "-"]
-            ),
+            wrap_cmd_for_low_priority(args),
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=timeout_s,
             **low_priority_popen_kwargs(),
@@ -60,19 +79,47 @@ def decode_walk_chunk(chunk_path: Path, *,
         err_text = r.stderr or ""
     except subprocess.TimeoutExpired as e:
         timed_out = True
-        exit_code = -1
-        err_text = (e.stderr or b"").decode("utf-8", errors="replace") \
-            if isinstance(e.stderr, (bytes, bytearray)) else (e.stderr or "")
+        exit_code = -1  # sentinel for "timed out before producing exit"
+        if isinstance(e.stderr, (bytes, bytearray)):
+            err_text = e.stderr.decode("utf-8", errors="replace")
+        else:
+            err_text = e.stderr or ""
+    except Exception as e:
+        # subprocess itself failed (extremely rare — bad path, missing
+        # ffmpeg binary, OS-level resource exhaustion). Return a shape-
+        # compatible dict so callers don't need a special path.
+        return {
+            "ok": False,
+            "decode_exit_code": None,
+            "error_count": 0,
+            "error_samples": [f"(could not run decode walk: {e})"],
+            "elapsed_seconds": round(time.monotonic() - t0, 1),
+            "timed_out": False,
+        }
+
     lines = [l.strip() for l in err_text.splitlines() if l.strip()]
     return {
         "ok": exit_code == 0 and len(lines) == 0 and not timed_out,
         "decode_exit_code": exit_code,
         "error_count": len(lines),
-        "error_samples": [l[:240] for l in lines[:8]],
-        "duration_seconds": duration_seconds,
+        "error_samples": [l[:240] for l in lines[:max_samples]],
         "elapsed_seconds": round(time.monotonic() - t0, 1),
         "timed_out": timed_out,
     }
+
+
+def decode_walk_chunk(chunk_path: Path, *,
+                     timeout_s: int = 120) -> dict:
+    """Decode-walk a single encoded chunk to confirm it's mergeable with
+    other chunks via concat. Used after an --auto-fix-choke retry to make
+    sure the fix didn't just produce a different flavor of broken output.
+
+    Returns the standard `_run_decode_walk` dict plus `duration_seconds`.
+    "Mergeable" means: ffmpeg can decode every frame + audio sample with
+    -xerror set (no error concealment fallback hiding silent corruption)."""
+    result = _run_decode_walk(chunk_path, timeout_s=timeout_s, max_samples=8)
+    result["duration_seconds"] = probe_duration(chunk_path)
+    return result
 
 
 def analyze_chunk_errors(chunk_path: Path, *,
@@ -84,55 +131,19 @@ def analyze_chunk_errors(chunk_path: Path, *,
     always upstream bitstream corruption that the decoder concealed and
     x265 then spun on).
 
-    Returns a dict with stable keys for downstream consumers — never raises:
-        decode_exit_code  ffmpeg's exit code (0 if no hard error; non-zero
-                          when -xerror triggered)
-        error_count       number of stderr lines printed by the decoder
-        error_samples     first `max_samples` lines verbatim (truncated
-                          per-line to 240 chars to keep records compact)
-        elapsed_seconds   how long the analysis took
-        timed_out         True if the probe was killed by `timeout_s`
+    Returns the standard `_run_decode_walk` dict (without the `ok` field —
+    callers of analyze_chunk_errors only care about counts/samples, not
+    a boolean verdict). Bigger default `max_samples` (12 vs 8) because
+    diagnostic callers want richer context for the JSONL log.
 
     `timeout_s` caps the probe — for a 100-sec 4K chunk a decode walk
     usually completes in 5-15 s, but we don't want a doubly-broken file to
     block the next queue job indefinitely on this diagnostic step alone."""
-    start = time.monotonic()
-    timed_out = False
-    try:
-        r = subprocess.run(
-            wrap_cmd_for_low_priority(
-                ["ffmpeg", "-v", "error", "-hide_banner", "-xerror",
-                 "-i", str(chunk_path),
-                 "-map", "0:v?", "-map", "0:a?",
-                 "-f", "null", "-"]
-            ),
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=timeout_s,
-            **low_priority_popen_kwargs(),
-        )
-        exit_code = r.returncode
-        err_text = r.stderr or ""
-    except subprocess.TimeoutExpired as e:
-        timed_out = True
-        exit_code = None
-        err_text = (e.stderr or b"").decode("utf-8", errors="replace") \
-            if isinstance(e.stderr, (bytes, bytearray)) else (e.stderr or "")
-    except Exception as e:
-        return {
-            "decode_exit_code": None,
-            "error_count": 0,
-            "error_samples": [f"(could not run decode walk: {e})"],
-            "elapsed_seconds": round(time.monotonic() - start, 1),
-            "timed_out": False,
-        }
-    lines = [l.strip() for l in err_text.splitlines() if l.strip()]
-    return {
-        "decode_exit_code": exit_code,
-        "error_count": len(lines),
-        "error_samples": [l[:240] for l in lines[:max_samples]],
-        "elapsed_seconds": round(time.monotonic() - start, 1),
-        "timed_out": timed_out,
-    }
+    result = _run_decode_walk(chunk_path, timeout_s=timeout_s,
+                              max_samples=max_samples)
+    # Backward-compat: callers expect the shape without `ok`.
+    result.pop("ok", None)
+    return result
 
 
 def _decode_check(path: Path) -> str | None:
@@ -141,26 +152,19 @@ def _decode_check(path: Path) -> str | None:
 
     Catches the corruption classes structural ffprobe misses: mid-bitstream
     truncation, bad packet offsets at chunk boundaries, NAL units the decoder
-    can't reconstruct, audio frames with invalid headers. The cost is a full
-    decode of the file (typically 5-10x faster than real-time for HEVC at
-    low bitrate). `-xerror` makes ffmpeg fast-fail on the first hard error
-    rather than scanning the rest of the file, so a bad output is detected
-    quickly while a healthy one still pays the full decode cost."""
-    r = subprocess.run(
-        wrap_cmd_for_low_priority(
-            ["ffmpeg", "-v", "error", "-hide_banner", "-xerror",
-             "-i", str(path),
-             "-map", "0:v?", "-map", "0:a?",
-             "-f", "null", "-"]
-        ),
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        **low_priority_popen_kwargs(),
-    )
-    err = (r.stderr or "").strip()
-    if r.returncode != 0:
-        return f"ffmpeg exit {r.returncode}" + (f": {err[:400]}" if err else "")
-    if err:
-        return f"decode produced error output: {err[:400]}"
+    can't reconstruct, audio frames with invalid headers."""
+    # Generous timeout (10 min) — full-file decode of a 30-min 4K mkv can
+    # take a few minutes on lower-end hardware.
+    r = _run_decode_walk(path, timeout_s=600, max_samples=4)
+    if r["timed_out"]:
+        return f"decode walk timed out after {r['elapsed_seconds']}s"
+    if r["decode_exit_code"] not in (0, None):
+        tail = "; ".join(r["error_samples"])[:400]
+        suffix = f": {tail}" if tail else ""
+        return f"ffmpeg exit {r['decode_exit_code']}{suffix}"
+    if r["error_count"] > 0:
+        tail = "; ".join(r["error_samples"])[:400]
+        return f"decode produced error output: {tail}"
     return None
 
 

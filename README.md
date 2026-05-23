@@ -99,11 +99,55 @@ frontmatter in `SKILL.md` on prompts like *"compress this video"*,
 *"shrink this mp4"*, *"compress everything in this folder"*.
 
 Re-running the installer inside an existing clone is supported — it
-detects the clone via a sibling `SKILL.md`, skips the clone step, and
-just verifies deps. Useful after `git pull` to confirm nothing broke.
+detects the clone via a sibling `.claude-plugin/plugin.json`, skips the
+clone step, and just verifies deps. Useful after `git pull` to confirm
+nothing broke.
 
 Standalone use without Claude Code is also fine — clone anywhere, run
 the installer, then invoke `compress.py` / `run_queue.py` directly.
+
+## Upgrading
+
+For users who installed via `/plugin install`, Claude Code's normal
+plugin-update mechanism handles the pull.
+
+For users who installed via the curl/irm one-liner:
+
+```bash
+# macOS / Linux
+cd ~/.claude/plugins/x265-compress-skill && git pull && bash install.sh
+```
+
+```powershell
+# Windows
+Set-Location "$env:USERPROFILE\.claude\plugins\x265-compress-skill"
+git pull
+& .\install.ps1 -Yes
+```
+
+`install.sh` / `install.ps1` detect the existing clone and just verify
+deps (no overwrite). See [`CHANGELOG.md`](CHANGELOG.md) for what
+changed between versions; `version.txt` is written at install time with
+the commit SHA so a bug report can identify which build you're running.
+
+## Data locations
+
+The plugin directory holds **only the code** — your encoding data lives
+next to your video files:
+
+| Data | Location |
+|---|---|
+| Encoder script (`.bat` / `.sh`) | `<video_folder>/.tmp/compress_<name>.bat` |
+| Chunked workdir | `<video_folder>/.tmp/.compress_<name>/` |
+| Pre-flight scan cache | `<source_video>.preflight.json` (next to source) |
+| Quality scores sidecar | `<video_folder>/.tmp/<output>.quality.json` |
+| Per-encode markdown report | `<video_folder>/.tmp/<output>.report.md` |
+| Queue aggregate report | `<queue_folder>/.tmp/<queue_stem>_report.md` |
+| Encoding history JSONL | `<video_folder>/encoding_history.jsonl` |
+
+`rm -rf ~/.claude/plugins/x265-compress-skill/` removes ONLY the code —
+your sidecars, reports, history, and any in-progress chunked workdirs
+stay with the videos. A fresh install picks up where you left off.
 
 ## Quick start
 

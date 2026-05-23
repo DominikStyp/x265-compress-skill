@@ -15,6 +15,9 @@ venv/
 env/
 ENV/
 
+# Per-install commit-SHA stamp (written by install.sh / install.ps1)
+version.txt
+
 # Editor / IDE
 .vscode/
 .idea/
