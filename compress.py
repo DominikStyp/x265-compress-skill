@@ -1,5 +1,5 @@
 """
-ffmpeg-compress-video: analyse a video with ffprobe, decide x265 settings,
+x265-compress-skill: analyse a video with ffprobe, decide x265 settings,
 and write a .bat next to it that does the actual encode.
 
 Run:

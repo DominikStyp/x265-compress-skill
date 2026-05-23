@@ -3,7 +3,7 @@
 # Two ways to invoke:
 #   1. Pipe from web (fresh machine, no clone yet):
 #        irm https://raw.githubusercontent.com/DominikStyp/x265-compress-skill/master/install.ps1 | iex
-#      Will clone the repo into %USERPROFILE%\.claude\skills\ffmpeg-compress-video,
+#      Will clone the repo into %USERPROFILE%\.claude\plugins\x265-compress-skill,
 #      then verify deps and run a smoke test.
 #
 #   2. Inside an existing clone (re-run after git pull, etc.):
@@ -23,7 +23,7 @@ $ErrorActionPreference = "Stop"
 $RepoUrl = "https://github.com/DominikStyp/x265-compress-skill.git"
 # Installs as a Claude Code plugin (per .claude-plugin/plugin.json).
 # Use $env:SKILL_DIR=<path> to override.
-$DefaultSkillDir = "$env:USERPROFILE\.claude\plugins\ffmpeg-compress-video"
+$DefaultSkillDir = "$env:USERPROFILE\.claude\plugins\x265-compress-skill"
 
 # --- Detect: are we running from inside a clone, or piped fresh? ------------
 # Look for the plugin manifest as the marker - SKILL.md moved under skills/
@@ -173,5 +173,5 @@ Write-Host ""
 Write-Host "    Standalone (no Claude Code):"
 Write-Host ('      python "' + $SkillDir + '\compress.py" "C:\path\to\video.mp4" --resumable')
 Write-Host ""
-Write-Host ("    See " + $SkillDir + "\skills\ffmpeg-compress-video\SKILL.md for the agent playbook,")
+Write-Host ("    See " + $SkillDir + "\skills\x265-compress-skill\SKILL.md for the agent playbook,")
 Write-Host ("    and " + $SkillDir + "\docs\AGENT_QUEUE_RECIPES.md for queue.json templates.")

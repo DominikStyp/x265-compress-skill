@@ -4,7 +4,7 @@
 # Two ways to invoke:
 #   1. Curl-piped (fresh machine, no clone yet):
 #        curl -fsSL https://raw.githubusercontent.com/DominikStyp/x265-compress-skill/master/install.sh | bash
-#      Will clone the repo into ~/.claude/skills/ffmpeg-compress-video, then
+#      Will clone the repo into ~/.claude/plugins/x265-compress-skill, then
 #      verify deps and run a smoke test.
 #
 #   2. Inside an existing clone (re-run after git pull, etc.):
@@ -18,14 +18,14 @@
 #
 # Override the install location:
 #   - SKILL_DIR=/some/where curl ... | bash
-#   - Defaults to $HOME/.claude/skills/ffmpeg-compress-video.
+#   - Defaults to $HOME/.claude/plugins/x265-compress-skill.
 
 set -euo pipefail
 
 REPO_URL="https://github.com/DominikStyp/x265-compress-skill.git"
 # Installs as a Claude Code plugin (per .claude-plugin/plugin.json).
 # Use SKILL_DIR=<path> to override.
-DEFAULT_SKILL_DIR="$HOME/.claude/plugins/ffmpeg-compress-video"
+DEFAULT_SKILL_DIR="$HOME/.claude/plugins/x265-compress-skill"
 
 # --- Detect: are we running from inside a clone, or piped fresh? ------------
 # Look for the plugin manifest as the marker — SKILL.md moved under skills/
@@ -194,5 +194,5 @@ echo
 echo "    Standalone (no Claude Code):"
 echo "      python3 $SKILL_DIR/compress.py /path/to/video.mp4 --resumable"
 echo
-echo "    See $SKILL_DIR/skills/ffmpeg-compress-video/SKILL.md for the agent playbook,"
+echo "    See $SKILL_DIR/skills/x265-compress-skill/SKILL.md for the agent playbook,"
 echo "    and $SKILL_DIR/docs/AGENT_QUEUE_RECIPES.md for queue.json templates."

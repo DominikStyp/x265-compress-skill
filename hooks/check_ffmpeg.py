@@ -34,7 +34,7 @@ def have_ffmpeg() -> bool:
 def _emit(msg: str) -> None:
     """Print to stderr — Claude Code surfaces stderr to the user when the
     hook exits non-zero. stdout is suppressed by convention."""
-    print(f"[ffmpeg-compress-video] {msg}", file=sys.stderr)
+    print(f"[x265-compress-skill] {msg}", file=sys.stderr)
 
 
 def _try_install_macos() -> bool:

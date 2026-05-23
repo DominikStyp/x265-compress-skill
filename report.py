@@ -1,5 +1,5 @@
 """
-Markdown report generator for ffmpeg-compress-video runs.
+Markdown report generator for x265-compress-skill runs.
 
 Two ways to use it:
 

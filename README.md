@@ -57,7 +57,7 @@ on next session start and:
 
 If ffmpeg's already installed: the hook is a fast no-op (silent).
 
-To uninstall: `/plugin uninstall ffmpeg-compress-video`.
+To uninstall: `/plugin uninstall x265-compress-skill`.
 
 ### Option 2 — `curl | bash` (full setup, including ffmpeg)
 
@@ -91,7 +91,7 @@ $env:INSTALL_YES=1; irm https://raw.githubusercontent.com/DominikStyp/x265-compr
 
 Override the install location with `SKILL_DIR=/some/where` (POSIX) or
 `$env:SKILL_DIR="..."` (PowerShell). Default is
-`~/.claude/skills/ffmpeg-compress-video/`.
+`~/.claude/plugins/x265-compress-skill/`.
 
 After install, restart Claude Code (or run `/skills` to refresh). The
 skill activates automatically via the `name:` / `description:`

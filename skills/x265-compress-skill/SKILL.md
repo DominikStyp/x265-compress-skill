@@ -1,9 +1,9 @@
 ---
-name: ffmpeg-compress-video
+name: x265-compress-skill
 description: Use whenever the user wants to compress, shrink, re-encode, or transcode a video file with ffmpeg / x265 / HEVC. Analyses the source with ffprobe, picks CRF and motion/sharpness-tuned x265 parameters based on the source codec and bits-per-pixel, then writes a `.bat` next to the source that does the encode (no audio re-encoding, output is always `.mkv`). Trigger on phrases like "compress this video", "make this mp4 smaller", "x265 encode", "shrink this file", "convert to h265", "transcode to mkv", even when the user does not say "ffmpeg" explicitly.
 ---
 
-# ffmpeg-compress-video
+# x265-compress-skill
 
 Generate a one-shot script (`.bat` on Windows, `.sh` on macOS/Linux) that compresses a video with x265 (CPU), tuned for sharpness and motion, with no audio re-encoding. **All decision logic lives in the bundled `compress.py`** — this skill exists to invoke it, interpret its output, and let Claude tweak the script afterwards for unusual sources.
 
@@ -105,14 +105,14 @@ agnostic; fall back to the canonical install path otherwise.
 # Windows — env var primary, plugins-dir fallback
 python "${env:CLAUDE_PLUGIN_ROOT}\compress.py" "<full path to source video>"
 # or:
-python "$env:USERPROFILE\.claude\plugins\ffmpeg-compress-video\compress.py" "<source>"
+python "$env:USERPROFILE\.claude\plugins\x265-compress-skill\compress.py" "<source>"
 ```
 
 ```bash
 # macOS / Linux
 python3 "${CLAUDE_PLUGIN_ROOT}/compress.py" "<full path to source video>"
 # or:
-python3 "$HOME/.claude/plugins/ffmpeg-compress-video/compress.py" "<source>"
+python3 "$HOME/.claude/plugins/x265-compress-skill/compress.py" "<source>"
 ```
 
 The script:
@@ -384,7 +384,7 @@ This salvage pattern is intentionally a **manual operator step**, not an automat
 For batch encoding of multiple files, write a JSON queue and feed it to the bundled `run_queue.py`. Each job inherits an optional `defaults` block and may override any compress.py flag per job.
 
 ```powershell
-python "$env:USERPROFILE\.claude\skills\ffmpeg-compress-video\run_queue.py" "C:\path\to\queue.json"
+python "$env:USERPROFILE\.claude\plugins\x265-compress-skill\run_queue.py" "C:\path\to\queue.json"
 ```
 
 ### Queue JSON schema
@@ -442,7 +442,7 @@ Unknown keys produce a warning and are dropped — gives you a typo safety net.
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-python "%USERPROFILE%\.claude\skills\ffmpeg-compress-video\run_queue.py" "%~dp0queue.json"
+python "%USERPROFILE%\.claude\plugins\x265-compress-skill\run_queue.py" "%~dp0queue.json"
 set QUEUE_RC=%errorlevel%
 pause
 exit /b %QUEUE_RC%
