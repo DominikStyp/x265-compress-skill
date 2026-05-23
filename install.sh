@@ -23,12 +23,16 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/DominikStyp/x265-compress-skill.git"
-DEFAULT_SKILL_DIR="$HOME/.claude/skills/ffmpeg-compress-video"
+# Installs as a Claude Code plugin (per .claude-plugin/plugin.json).
+# Use SKILL_DIR=<path> to override.
+DEFAULT_SKILL_DIR="$HOME/.claude/plugins/ffmpeg-compress-video"
 
 # --- Detect: are we running from inside a clone, or piped fresh? ------------
+# Look for the plugin manifest as the marker — SKILL.md moved under skills/
+# in the plugin restructure, but plugin.json is stable at the repo root.
 SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
 SCRIPT_DIR="$( cd "$( dirname "$SCRIPT_PATH" )" 2>/dev/null && pwd )" || SCRIPT_DIR=""
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/SKILL.md" ]; then
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/.claude-plugin/plugin.json" ]; then
     SKILL_DIR="$SCRIPT_DIR"
     NEEDS_CLONE=0
 else
@@ -190,5 +194,5 @@ echo
 echo "    Standalone (no Claude Code):"
 echo "      python3 $SKILL_DIR/compress.py /path/to/video.mp4 --resumable"
 echo
-echo "    See $SKILL_DIR/SKILL.md for the agent playbook,"
+echo "    See $SKILL_DIR/skills/ffmpeg-compress-video/SKILL.md for the agent playbook,"
 echo "    and $SKILL_DIR/docs/AGENT_QUEUE_RECIPES.md for queue.json templates."

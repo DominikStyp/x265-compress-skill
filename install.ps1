@@ -21,12 +21,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 $RepoUrl = "https://github.com/DominikStyp/x265-compress-skill.git"
-$DefaultSkillDir = "$env:USERPROFILE\.claude\skills\ffmpeg-compress-video"
+# Installs as a Claude Code plugin (per .claude-plugin/plugin.json).
+# Use $env:SKILL_DIR=<path> to override.
+$DefaultSkillDir = "$env:USERPROFILE\.claude\plugins\ffmpeg-compress-video"
 
 # --- Detect: are we running from inside a clone, or piped fresh? ------------
+# Look for the plugin manifest as the marker - SKILL.md moved under skills/
+# in the plugin restructure, but plugin.json is stable at the repo root.
 $ScriptPath = $MyInvocation.MyCommand.Path
 $ScriptDir = if ($ScriptPath) { Split-Path -Parent $ScriptPath } else { $null }
-if ($ScriptDir -and (Test-Path "$ScriptDir\SKILL.md")) {
+if ($ScriptDir -and (Test-Path "$ScriptDir\.claude-plugin\plugin.json")) {
     $SkillDir = $ScriptDir
     $NeedsClone = $false
 } else {
@@ -169,5 +173,5 @@ Write-Host ""
 Write-Host "    Standalone (no Claude Code):"
 Write-Host ('      python "' + $SkillDir + '\compress.py" "C:\path\to\video.mp4" --resumable')
 Write-Host ""
-Write-Host ("    See " + $SkillDir + "\SKILL.md for the agent playbook,")
+Write-Host ("    See " + $SkillDir + "\skills\ffmpeg-compress-video\SKILL.md for the agent playbook,")
 Write-Host ("    and " + $SkillDir + "\docs\AGENT_QUEUE_RECIPES.md for queue.json templates.")

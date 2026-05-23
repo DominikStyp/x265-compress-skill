@@ -35,10 +35,29 @@ scripts run standalone from any shell.
 
 ## Install
 
-Single-line install. The installer auto-clones the repo into your
-Claude Code skills directory, checks Python, offers to install ffmpeg
-via the system package manager (`brew` / `apt` / `dnf` / `pacman` /
-`winget`) if it's missing, then runs an import smoke test.
+Two install paths, depending on what you've already got set up.
+
+### Option 1 — `/plugin install` (Claude Code native)
+
+Inside Claude Code, run:
+
+```
+/plugin install github:DominikStyp/x265-compress-skill
+```
+
+Claude Code clones the repo, reads `.claude-plugin/plugin.json`, and
+loads the bundled skill. **Assumes ffmpeg + ffprobe are already on your
+PATH** — the plugin system doesn't run install hooks.
+
+To uninstall: `/plugin uninstall ffmpeg-compress-video`.
+
+### Option 2 — `curl | bash` (full setup, including ffmpeg)
+
+Use this on a fresh machine where ffmpeg isn't installed yet. The
+installer auto-clones the repo into your Claude Code plugins directory,
+checks Python, offers to install ffmpeg via the system package manager
+(`brew` / `apt` / `dnf` / `pacman` / `winget`) if it's missing, then
+runs an import smoke test.
 
 **macOS / Linux**
 

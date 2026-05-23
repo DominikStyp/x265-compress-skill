@@ -58,7 +58,7 @@ python3 run_queue.py /path/to/queue.json
 
 d. Read the exit code + the markdown report it writes to `<videos>/.tmp/report_<timestamp>.md`. Report results to the user.
 
-See [`docs/AGENT_QUEUE_RECIPES.md`](docs/AGENT_QUEUE_RECIPES.md) for paste-ready recipes (anime, grain, mobile-compat, archival, etc.) and the full per-job key schema + exit-code mapping.
+See [`docs/AGENT_QUEUE_RECIPES.md`](../../docs/AGENT_QUEUE_RECIPES.md) for paste-ready recipes (anime, grain, mobile-compat, archival, etc.) and the full per-job key schema + exit-code mapping.
 
 ### 3. Interpreting the user's wording
 
@@ -86,20 +86,28 @@ If any job exits `pre-flight-failed` (code 6), `awaiting-chunk-fix` (code 7), or
 
 Run the bundled script with the source video as the argument:
 
+When Claude Code invokes the skill, the plugin root is exposed as
+`${CLAUDE_PLUGIN_ROOT}`. Prefer that env var so the call is location-
+agnostic; fall back to the canonical install path otherwise.
+
 ```powershell
-# Windows
-python "$env:USERPROFILE\.claude\skills\ffmpeg-compress-video\compress.py" "<full path to source video>"
+# Windows — env var primary, plugins-dir fallback
+python "${env:CLAUDE_PLUGIN_ROOT}\compress.py" "<full path to source video>"
+# or:
+python "$env:USERPROFILE\.claude\plugins\ffmpeg-compress-video\compress.py" "<source>"
 ```
 
 ```bash
 # macOS / Linux
-python3 "$HOME/.claude/skills/ffmpeg-compress-video/compress.py" "<full path to source video>"
+python3 "${CLAUDE_PLUGIN_ROOT}/compress.py" "<full path to source video>"
+# or:
+python3 "$HOME/.claude/plugins/ffmpeg-compress-video/compress.py" "<source>"
 ```
 
 The script:
 
 1. Runs `ffprobe` on the input and reads codec / resolution / fps / bitrate / pix-fmt / color metadata.
-2. Picks a CRF from the source bits-per-pixel (see `references/x265-tuning.md` for the bands).
+2. Picks a CRF from the source bits-per-pixel (see [`references/x265-tuning.md`](../../references/x265-tuning.md) for the bands).
 3. Picks a preset from encode work (duration × resolution × fps): `slower` < 5e9 work units, `slow` default, `medium` > 5e11.
 4. Adds HDR metadata to `-x265-params` if the source is HDR (bt2020 / PQ / HLG).
 5. Writes `compress_<basename>.bat` **next to the source file**.
@@ -627,7 +635,7 @@ When `--resumable` chunks are stitched together, the concat phase uses `-c copy`
 - **Audio is byte-identical** to source (always `-c copy`).
 - **Measurable differences vs single-pass** are limited to: (1) the ~2-5 % size penalty already documented above, from rate-control reset per chunk; (2) a tiny VMAF dip in the first ~25-40 frames of each chunk because x265's lookahead can't see across boundaries. Both are invisible to the eye and well within industry-standard tolerances (Netflix, YouTube, AWS MediaConvert all chunk-encode for the same reasons we do).
 
-For anything unusual that the flags don't cover, **edit the `.bat` directly after generation**. The structure is intentionally simple: one `ffmpeg` invocation with line-continuations. `references/x265-tuning.md` explains what every parameter does so you can change them with intent rather than guessing.
+For anything unusual that the flags don't cover, **edit the `.bat` directly after generation**. The structure is intentionally simple: one `ffmpeg` invocation with line-continuations. [`references/x265-tuning.md`](../../references/x265-tuning.md) explains what every parameter does so you can change them with intent rather than guessing.
 
 ## Preconditions
 
