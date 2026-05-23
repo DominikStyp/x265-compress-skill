@@ -12,6 +12,8 @@ import sys
 import time
 from pathlib import Path
 
+from platform_compat import IS_WINDOWS
+
 from .job_schema import build_compress_argv
 
 
@@ -50,23 +52,35 @@ def generate_bat(compress_py: Path, merged_job: dict
         return 0, None, f"parse error: {e}"
 
 
-def run_bat(bat_path: str) -> tuple[int, float]:
-    """Run the .bat that compress.py just wrote. Returns (exit_code,
-    elapsed_seconds).
+def run_script(script_path: str) -> tuple[int, float]:
+    """Run the encoder script that compress.py just wrote. Dispatches to
+    cmd.exe on Windows or bash on POSIX. Returns (exit_code, elapsed_seconds).
 
     `stdin` is INHERITED (not redirected to DEVNULL) so the encoder's
     interactive keyboard control (↑↓/Space/1-9/r) can read keypresses
-    through cmd → bat → python.
+    through the launcher → script → python.
 
-    The `call` prefix matters when the bat path contains `&` (or any of
-    `<>()@^|`). Without it, `cmd /c "path with & in it.bat"` triggers cmd's
-    quote-stripping rule (see `cmd /?` rule 2): leading quote stripped,
-    trailing quote stripped, then cmd parses `path with & in it.bat` as
-    TWO commands separated by `&`. With `cmd /c call "path"`, the first
-    token after /c is `call`, not `"`, so rule 2 never fires."""
+    Windows: the `call` prefix matters when the bat path contains `&` (or any
+    of `<>()@^|`). Without it, `cmd /c "path with & in it.bat"` triggers
+    cmd's quote-stripping rule (see `cmd /?` rule 2): leading quote stripped,
+    trailing quote stripped, then cmd parses `path with & in it.bat` as TWO
+    commands separated by `&`. With `cmd /c call "path"`, the first token
+    after /c is `call`, not `"`, so rule 2 never fires.
+
+    POSIX: `bash <path>` works regardless of executable bit (chmod failures
+    on FAT/SMB filesystems would otherwise leave the script unrunnable).
+    Bash handles single-quoted paths with `&`, `[`, `]`, `(`, `)` natively
+    when assigned to variables via `_SKILL_IN='...'`."""
     t0 = time.monotonic()
-    rc = subprocess.call(["cmd.exe", "/c", "call", bat_path])
+    if IS_WINDOWS:
+        rc = subprocess.call(["cmd.exe", "/c", "call", script_path])
+    else:
+        rc = subprocess.call(["bash", script_path])
     return rc, time.monotonic() - t0
+
+
+# Back-compat alias for any caller still using the old name.
+run_bat = run_script
 
 
 def read_quality_sidecar(out_path: Path) -> dict | None:
@@ -154,7 +168,9 @@ def run_one_job(*, compress_py: Path, merged: dict,
         return "failed-parse", _placeholder_row(input_path, in_bytes,
                                                  merged, "failed-parse")
 
-    rc, elapsed = run_bat(summary["bat_path"])
+    # compress.py emits "script_path" plus a "bat_path" back-compat alias.
+    # Prefer the canonical name; fall back to the alias.
+    rc, elapsed = run_script(summary.get("script_path") or summary["bat_path"])
     status = status_for_exit(rc)
     print(f"[{i}/{n}] -> {status}  ({elapsed:.0f}s)")
 

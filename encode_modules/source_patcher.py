@@ -41,7 +41,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .process_control import IDLE_PRIORITY_FLAGS
+from platform_compat import low_priority_popen_kwargs
 
 
 def _decode_walk_count(src: Path, start: float, dur: float,
@@ -58,7 +58,7 @@ def _decode_walk_count(src: Path, start: float, dur: float,
              "-f", "null", "-"],
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=timeout_s,
-            creationflags=IDLE_PRIORITY_FLAGS,
+            **low_priority_popen_kwargs(),
         )
         return len([l for l in (r.stderr or "").splitlines() if l.strip()])
     except subprocess.TimeoutExpired:
@@ -196,7 +196,7 @@ def _build_copy_segment(src: Path, start: float, end: float,
     ]
     r = subprocess.run(args, capture_output=True, text=True,
                        encoding="utf-8", errors="replace",
-                       creationflags=IDLE_PRIORITY_FLAGS)
+                       **low_priority_popen_kwargs())
     return r.returncode == 0
 
 
@@ -217,7 +217,7 @@ def _build_encode_segment(src: Path, start: float, end: float,
         "-f", "mpegts",
         str(out),
     ], capture_output=True, text=True, encoding="utf-8",
-       errors="replace", creationflags=IDLE_PRIORITY_FLAGS)
+       errors="replace", **low_priority_popen_kwargs())
     return r.returncode == 0
 
 
@@ -334,7 +334,7 @@ def auto_patch_source(
         "-movflags", "+faststart",
         str(out_mp4),
     ], capture_output=True, text=True, encoding="utf-8",
-       errors="replace", creationflags=IDLE_PRIORITY_FLAGS)
+       errors="replace", **low_priority_popen_kwargs())
     if r.returncode != 0:
         print(f"  ! auto-patch concat failed (rc={r.returncode})")
         return None

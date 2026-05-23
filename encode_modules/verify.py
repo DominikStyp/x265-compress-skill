@@ -23,8 +23,9 @@ import subprocess
 import time
 from pathlib import Path
 
+from platform_compat import low_priority_popen_kwargs
+
 from .probes import fmt_dur, probe_duration, probe_full
-from .process_control import IDLE_PRIORITY_FLAGS
 
 
 def decode_walk_chunk(chunk_path: Path, *,
@@ -51,7 +52,7 @@ def decode_walk_chunk(chunk_path: Path, *,
              "-f", "null", "-"],
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=timeout_s,
-            creationflags=IDLE_PRIORITY_FLAGS,
+            **low_priority_popen_kwargs(),
         )
         exit_code = r.returncode
         err_text = r.stderr or ""
@@ -103,7 +104,7 @@ def analyze_chunk_errors(chunk_path: Path, *,
              "-f", "null", "-"],
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=timeout_s,
-            creationflags=IDLE_PRIORITY_FLAGS,
+            **low_priority_popen_kwargs(),
         )
         exit_code = r.returncode
         err_text = r.stderr or ""
@@ -147,7 +148,7 @@ def _decode_check(path: Path) -> str | None:
          "-map", "0:v?", "-map", "0:a?",
          "-f", "null", "-"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        creationflags=IDLE_PRIORITY_FLAGS,
+        **low_priority_popen_kwargs(),
     )
     err = (r.stderr or "").strip()
     if r.returncode != 0:

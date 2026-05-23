@@ -128,15 +128,19 @@ Trade-offs:
 
 ## CPU priority: ffmpeg always runs IDLE
 
-Every ffmpeg child spawned by the skill (chunk encodes, lossless split, concat, full decode-check, libvmaf measurement) is created with `subprocess.IDLE_PRIORITY_CLASS` — Windows scheduler priority 4, lower than `start /low` (BELOW_NORMAL = 6). The kernel only gives ffmpeg CPU time when *no* NORMAL/HIGH-priority process wants it. In practice this means:
+Every ffmpeg child spawned by the skill (chunk encodes, lossless split, concat, full decode-check, libvmaf measurement) runs at low CPU priority. The exact mechanism depends on OS, dispatched via `platform_compat.low_priority_popen_kwargs()`:
 
-- The browser, editor, video player, terminal, etc. always preempt ffmpeg the moment they need CPU. You can keep working through a long encode with no perceptible slowdown to interactive apps, even when all P-cores are at 100 % per Task Manager.
-- Wall-clock encode time is essentially unchanged on a quiet system (idle priority still gets all available cycles when nothing else wants them). It only stretches when you're actively using the machine — exactly when you want it to back off.
+- **Windows**: `subprocess.IDLE_PRIORITY_CLASS` creationflag — scheduler priority 4, lower than `start /low` (BELOW_NORMAL = 6).
+- **macOS / Linux**: `os.nice(19)` via `preexec_fn`. Same effect — the scheduler only runs the encode when no other process wants CPU.
+
+In practice this means:
+
+- The browser, editor, video player, terminal, etc. always preempt ffmpeg the moment they need CPU. You can keep working through a long encode with no perceptible slowdown to interactive apps, even when every core is at 100 %.
+- Wall-clock encode time is essentially unchanged on a quiet system (low priority still gets all available cycles when nothing else wants them). It only stretches when you're actively using the machine — exactly when you want it to back off.
 - ffprobe and `progress.py` stay at NORMAL priority because they're sub-second / I/O-bound; touching their priority adds noise to the diff but no behavior change.
-- You'll see `CPU priority: ffmpeg runs at IDLE — foreground apps (browser, editor) always preempt encode.` near the start of each encode (both serial and parallel paths).
-- Non-Windows: the creationflag evaluates to 0, so the change is a no-op on Linux/macOS (this skill is Windows-first anyway).
+- You'll see `CPU priority: ffmpeg runs at low priority — foreground apps (browser, editor) always preempt encode.` near the start of each encode (both serial and parallel paths).
 
-If for some reason you need ffmpeg back at NORMAL (e.g. dedicated encoding box, nothing else running), edit `_IDLE_PRIORITY_FLAGS` near the top of `encode_resumable.py` to `0` — it's the only knob, and it covers every spawn site.
+If for some reason you need ffmpeg back at NORMAL (e.g. dedicated encoding box, nothing else running), edit `low_priority_popen_kwargs()` in `platform_compat/_windows.py` (or `_posix.py`) to return `{}` — that's the only knob, and it covers every spawn site.
 
 ## Size-budget guard (`--max-size-percent N`)
 

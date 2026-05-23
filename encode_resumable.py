@@ -35,7 +35,7 @@ from encode_modules.history_state import (
 )
 from encode_modules.preflight_decision import handle_preflight
 from encode_modules.probes import probe_duration
-from encode_modules.process_control import enable_windows_ansi
+from platform_compat import enable_ansi
 from encode_modules.reporting import (
     measure_quality_and_write_sidecar,
     print_summary,
@@ -48,9 +48,10 @@ from encode_modules.verify_loop import (
 )
 
 
-# Enable ANSI escape processing on cmd.exe's stdout so the live progress
-# block's color codes render instead of appearing as raw `\033[..` text.
-enable_windows_ansi()
+# Enable ANSI escape processing for the current terminal. On Windows this
+# turns on VT processing on the cmd.exe stdout handle; on POSIX it's a no-op
+# (modern terminals support ANSI natively).
+enable_ansi()
 
 MAX_VERIFY_ATTEMPTS = 3
 

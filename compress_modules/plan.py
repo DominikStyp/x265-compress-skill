@@ -6,8 +6,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from platform_compat import IS_WINDOWS
+
 from .probe import SourceInfo
 from .x265_params import BASE_X265_PARAMS
+
+
+# Generated script extension by OS. cmd.exe needs `.bat`; bash uses `.sh`.
+# Plan.py owns this because it builds the script's output path during
+# plan_encode(); the writer reads it from here too.
+_SCRIPT_EXTENSION = ".bat" if IS_WINDOWS else ".sh"
 
 
 @dataclass
@@ -17,10 +25,15 @@ class EncodePlan:
     pix_fmt_out: str
     x265_params: list[str]
     output_path: str
-    bat_path: str
+    script_path: str    # `.bat` on Windows, `.sh` on POSIX — see plan.py
     warnings: list[str]
     estimated_reduction: str
     notes: list[str]
+
+    @property
+    def bat_path(self) -> str:
+        """Back-compat alias for callers that still reference bat_path."""
+        return self.script_path
 
 
 def pick_crf(info: SourceInfo) -> int:
@@ -141,9 +154,9 @@ def _apply_hdr(params: list[str], info: SourceInfo,
 
 
 def _resolve_output_paths(source_path: Path) -> tuple[Path, Path, str]:
-    """Decide (output_path, bat_path, basename). All generated artifacts live
-    under <source_dir>/.tmp/ so the encoding directory stays clean — only
-    sources, finished targets, run_queue.bat, and queue.json at root."""
+    """Decide (output_path, script_path, basename). All generated artifacts
+    live under <source_dir>/.tmp/ so the encoding directory stays clean —
+    only sources, finished targets, and queue.json at root."""
     source_dir = source_path.parent
     tmp_dir = source_dir / ".tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -151,8 +164,8 @@ def _resolve_output_paths(source_path: Path) -> tuple[Path, Path, str]:
     # If source is already .mkv, suffix with .x265 to avoid overwriting.
     out_name = f"{base}.x265.mkv" if source_path.suffix.lower() == ".mkv" else f"{base}.mkv"
     output_path = source_dir / out_name
-    bat_path = tmp_dir / f"compress_{base}.bat"
-    return output_path, bat_path, base
+    script_path = tmp_dir / f"compress_{base}{_SCRIPT_EXTENSION}"
+    return output_path, script_path, base
 
 
 _REDUCTION_TABLE: dict[str, str] = {
@@ -204,13 +217,13 @@ def plan_encode(info: SourceInfo, source_path: Path, *,
                 "and produces smoother gradients."
             )
 
-    output_path, bat_path, _ = _resolve_output_paths(source_path)
+    output_path, script_path, _ = _resolve_output_paths(source_path)
     estimated_reduction = _REDUCTION_TABLE.get(info.codec, "30-50% (typical)")
 
     return EncodePlan(
         crf=crf, preset=preset, pix_fmt_out=pix_fmt_out,
         x265_params=params,
-        output_path=str(output_path), bat_path=str(bat_path),
+        output_path=str(output_path), script_path=str(script_path),
         warnings=warnings, estimated_reduction=estimated_reduction,
         notes=notes,
     )

@@ -4,8 +4,8 @@ file is pure stdout formatting.
 
 Every function here prints to stdout/stderr and returns nothing. Color
 escapes are inline ANSI SGR (yellow-bold for warnings, red-bold for hard
-failures, plain for normal info). The .bat wrapper enables ANSI via
-`process_control.enable_windows_ansi()` before main() runs.
+failures, plain for normal info). The encoder entry point enables ANSI
+via `platform_compat.enable_ansi()` before main() runs (no-op on POSIX).
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .process_control import IDLE_PRIORITY_FLAGS
+from platform_compat import IS_POSIX, IS_WINDOWS
 
 
 def print_encode_plan(todo: list, total: int, already: int, *,
@@ -47,9 +47,11 @@ def print_runtime_protections(has_job_protection: bool) -> None:
         print("      WARNING: Job Object unavailable — hard-killing this "
               "script (taskkill /F) will leave orphan ffmpegs.",
               file=sys.stderr)
-    if IDLE_PRIORITY_FLAGS:
-        print("      CPU priority: ffmpeg runs at IDLE — foreground apps "
-              "(browser, editor) always preempt encode.")
+    if IS_WINDOWS or IS_POSIX:
+        # Same effective behaviour on both OSes — foreground apps preempt
+        # the encode. Win32 IDLE_PRIORITY_CLASS / POSIX nice 19.
+        print("      CPU priority: ffmpeg runs at low priority — "
+              "foreground apps (browser, editor) always preempt encode.")
 
 
 def print_choke_guard_announcement(threshold_speed: float,

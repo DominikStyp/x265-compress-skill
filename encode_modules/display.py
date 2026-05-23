@@ -36,13 +36,14 @@ from collections import deque
 from pathlib import Path
 from typing import Optional
 
-from .probes import probe_duration
-from .process_control import (
-    assign_pid_to_job,
-    create_kill_on_close_job,
+from platform_compat import (
+    assign_to_lifetime_group,
+    create_lifetime_group,
     resume_pid,
     suspend_pid,
 )
+
+from .probes import probe_duration
 from . import display_render as render
 
 
@@ -139,7 +140,12 @@ class ParallelDisplay:
         # them. Without it, paused ffmpegs orphaned by a hard kill would stay
         # suspended forever and need manual cleanup. None on non-Windows or if
         # the API fails (we fall back to the resume_all-on-exit safety net).
-        self._job_handle = create_kill_on_close_job()
+        # OS-portable kill-on-parent-exit guarantee. On Windows this is a
+        # Job Object (bulletproof — survives taskkill /F and BSOD). On
+        # POSIX it's a process-group + atexit/SIGTERM handler; covers
+        # graceful exits and Ctrl+C, but SIGKILL of the parent still
+        # orphans children (no POSIX equivalent of Win32 Job Objects).
+        self._lifetime_group = create_lifetime_group()
         # Source seconds already encoded in *previous* runs (i.e. existing enc_*.mkv).
         # Probed from the matching src_*.mkv files so the size projection starts
         # from a correct baseline even on resume.
@@ -191,9 +197,10 @@ class ParallelDisplay:
 
     @property
     def has_job_protection(self) -> bool:
-        """True iff the Job Object was successfully created. False means a
-        hard kill of this Python process won't auto-kill ffmpeg children."""
-        return bool(self._job_handle)
+        """True iff the lifetime-group cleanup is wired up (Win32 Job
+        Object on Windows, atexit-managed process-group on POSIX). False
+        means parent-death cleanup is unavailable on this platform."""
+        return bool(self._lifetime_group)
 
     # --- worker-side updates (called from worker threads) ---
 
@@ -265,11 +272,12 @@ class ParallelDisplay:
             # New ffmpeg in this slot starts unsuspended; clear any stale
             # paused-state from a prior chunk in the same slot.
             self.paused_slots.discard(slot)
-        # Tie the child to our kill-on-close job so it dies with us no matter
-        # how we exit. AssignProcessToJobObject is done OUTSIDE the lock —
-        # it's a Win32 syscall and the lock only needs to cover dict mutation.
-        if self._job_handle:
-            assign_pid_to_job(proc.pid, self._job_handle)
+        # Tie the child to our lifetime group so it dies with us. Done
+        # OUTSIDE the lock — both backends do platform syscalls (Win32
+        # AssignProcessToJobObject; POSIX set-add to the tracked group);
+        # the lock only needs to cover the dict mutation above.
+        if self._lifetime_group:
+            assign_to_lifetime_group(proc.pid, self._lifetime_group)
 
     def unregister_proc(self, slot: int) -> None:
         with self.lock:

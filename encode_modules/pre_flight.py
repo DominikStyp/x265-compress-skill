@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .process_control import IDLE_PRIORITY_FLAGS
+from platform_compat import low_priority_popen_kwargs
 
 
 def _probe_duration(src: Path) -> float:
@@ -106,7 +106,7 @@ def _walk_one_window(src: Path, start_s: float, dur_s: float,
              "-f", "null", "-"],
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=timeout_s,
-            creationflags=IDLE_PRIORITY_FLAGS,
+            **low_priority_popen_kwargs(),
         )
         rc = r.returncode
         err_text = r.stderr or ""

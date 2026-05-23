@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from .process_control import IDLE_PRIORITY_FLAGS
+from platform_compat import low_priority_popen_kwargs
 
 
 def split_source(src: Path, workdir: Path, seg_sec: int) -> list[Path]:
@@ -40,7 +40,7 @@ def split_source(src: Path, workdir: Path, seg_sec: int) -> list[Path]:
         "-segment_time", str(seg_sec),
         "-reset_timestamps", "1",
         str(workdir / "src_%04d.mkv"),
-    ], creationflags=IDLE_PRIORITY_FLAGS)
+    ], **low_priority_popen_kwargs())
     if r.returncode != 0:
         sys.exit(f"ERROR: segmenter failed (exit {r.returncode})")
     flag.touch()
@@ -185,7 +185,7 @@ def concat_chunks(workdir: Path, dst: Path) -> None:
         "-i", str(concat_list),
         "-c", "copy",
         str(dst),
-    ], creationflags=IDLE_PRIORITY_FLAGS)
+    ], **low_priority_popen_kwargs())
     if r.returncode != 0:
         sys.exit(f"ERROR: concat failed (exit {r.returncode})")
 

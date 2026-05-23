@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 
 from .probes import fmt_dur, probe_duration, probe_fps
-from .process_control import IDLE_PRIORITY_FLAGS
+from platform_compat import low_priority_popen_kwargs
 
 
 def _libvmaf_node_for(log_path: Path, subsample: int) -> str:
@@ -198,7 +198,7 @@ def _quality_check_run(src: Path, dst: Path, *,
             cmd,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace",
-            creationflags=IDLE_PRIORITY_FLAGS,
+            **low_priority_popen_kwargs(),
         )
 
         state: dict[str, str] = {}

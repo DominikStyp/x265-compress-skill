@@ -13,10 +13,11 @@ import sys
 import time
 from pathlib import Path
 
+from platform_compat import IS_POSIX, IS_WINDOWS, low_priority_popen_kwargs
+
 from .chunking import ffmpeg_chunk_cmd, reorder_middle_first
 from .history_state import record_chunk_elapsed
 from .probes import fmt_dur, probe_duration
-from .process_control import IDLE_PRIORITY_FLAGS
 
 
 def encode_chunks_serial(chunks: list[Path], workdir: Path, *,
@@ -32,9 +33,11 @@ def encode_chunks_serial(chunks: list[Path], workdir: Path, *,
     total = len(chunks)
     already = sum(1 for c in chunks if (workdir / f"enc_{c.stem}.mkv").exists())
     print(f"[2/4] Encoding chunks (serial). {already}/{total} already done — resuming.")
-    if IDLE_PRIORITY_FLAGS:
-        print("      CPU priority: ffmpeg runs at IDLE — foreground apps "
-              "(browser, editor) always preempt encode.")
+    if IS_WINDOWS or IS_POSIX:
+        # Same effective behaviour on both OSes — foreground apps preempt
+        # the encode. Win32 IDLE_PRIORITY_CLASS / POSIX nice 19.
+        print("      CPU priority: ffmpeg runs at low priority — "
+              "foreground apps always preempt encode.")
     progress_script = str(Path(__file__).resolve().parent.parent / "progress.py")
 
     encode_order = reorder_middle_first(chunks)
@@ -66,7 +69,7 @@ def encode_chunks_serial(chunks: list[Path], workdir: Path, *,
                             pix_fmt=pix_fmt, x265_params=x265_params,
                             extra_progress=["-progress", "-"]),
             stdout=subprocess.PIPE,
-            creationflags=IDLE_PRIORITY_FLAGS,
+            **low_priority_popen_kwargs(),
         )
         prog = subprocess.Popen(
             [sys.executable, "-u", progress_script,

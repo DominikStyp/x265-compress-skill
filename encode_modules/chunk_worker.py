@@ -19,12 +19,13 @@ import subprocess
 import time
 from pathlib import Path
 
+from platform_compat import low_priority_popen_kwargs
+
 from .chunking import ffmpeg_chunk_cmd
 from .chunk_recovery import _quarantine_part
 from .display import ParallelDisplay
 from .history_state import record_chunk_elapsed
 from .probes import probe_duration
-from .process_control import IDLE_PRIORITY_FLAGS
 
 
 def _parse_progress_state(state: dict[str, str]) -> tuple[float, int]:
@@ -70,7 +71,7 @@ def _encode_one_chunk_with_display(slot: int, chunk: Path, workdir: Path,
                          extra_progress=["-progress", "-"]),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace",
-        creationflags=IDLE_PRIORITY_FLAGS,
+        **low_priority_popen_kwargs(),
     )
     display.register_proc(slot, proc)
 

@@ -27,26 +27,33 @@ scripts run standalone from any shell.
 
 ## Requirements
 
-- Windows 10+ (uses Win32 Job Objects, NtSuspendProcess, cmd.exe — not
-  portable to Linux/Mac without rework)
+- **Windows 10+** *or* **macOS 11+** (Linux works too but isn't a primary
+  target — the POSIX backend covers both). OS-specific behaviour is
+  auto-detected; see [`platform_compat/`](platform_compat/__init__.py).
 - Python 3.9+ (standard library only — no `pip install` step)
-- `ffmpeg` and `ffprobe` on PATH
+- `ffmpeg` and `ffprobe` on PATH (and `python3` on PATH on POSIX)
 
 ## Quick start
 
-Single file:
+Single file (Windows):
 
 ```powershell
 python compress.py "C:\videos\input.mp4" --resumable --crf 22 --preset slow
 ```
 
-Writes `.tmp\compress_input.bat` next to the source. Run that `.bat` to
-start the encode.
+Single file (macOS / Linux):
 
-Queue mode:
+```bash
+python3 compress.py /Users/you/videos/input.mp4 --resumable --crf 22 --preset slow
+```
 
-```powershell
-python run_queue.py queue.json
+Writes `.tmp/compress_input.bat` (Windows) or `.tmp/compress_input.sh`
+(POSIX) next to the source. Run that script to start the encode.
+
+Queue mode (same JSON, same flags, both OSes):
+
+```bash
+python3 run_queue.py queue.json
 ```
 
 Minimal `queue.json`:
@@ -79,10 +86,32 @@ sharpness/motion-tuned x265 parameter set the skill applies by default.
 
 | Path | Purpose |
 |---|---|
-| `compress.py` | CLI entry: ffprobe → decide CRF/preset/x265-params → write the encoder .bat |
+| `compress.py` | CLI entry: ffprobe → decide CRF/preset/x265-params → write the encoder script |
 | `encode_resumable.py` | Pipeline: pre-flight → split → encode → verify → quality → cleanup |
 | `run_queue.py` | Sequential queue runner with mid-flight live-reload |
-| `compress_modules/` | Source probe, plan composition, .bat templates |
+| `platform_compat/` | OS abstraction (Win32 ↔ POSIX). Single point where the codebase decides what shell, what priority class, what suspend syscall to use |
+| `compress_modules/` | Source probe, plan composition, `.bat`/`.sh` script writer |
 | `encode_modules/` | Chunk worker, serial + parallel loops, live display, choke detection, VMAF, history, source guard |
 | `queue_modules/` | Job schema, queue I/O, per-job runner |
 | `references/` | x265 parameter rationale |
+
+## Platform support
+
+The OS-specific surface is intentionally contained to one package
+(`platform_compat/`). Adding a new platform = drop in a new
+`platform_compat/_<name>.py` providing the same set of names; nothing
+else in the codebase changes.
+
+| Concern | Windows backend | POSIX backend (macOS / Linux) |
+|---|---|---|
+| Subprocess priority | `IDLE_PRIORITY_CLASS` creationflag | `os.nice(19)` via `preexec_fn` |
+| Suspend / resume | `NtSuspendProcess` / `NtResumeProcess` | `SIGSTOP` / `SIGCONT` |
+| ANSI escape support | `SetConsoleMode` VT processing | Native (no-op) |
+| Kill children with parent | Win32 Job Object (`KILL_ON_JOB_CLOSE`) | Process group + `atexit`/`SIGTERM` handler |
+| Single-char keyboard | `msvcrt.getch` | `termios` cbreak + `select.select` |
+| Encoder script | `.bat` (cmd.exe + `chcp 65001`) | `.sh` (bash + UTF-8 native) |
+
+Known gap on POSIX: a `kill -9` of the parent Python skips signal handlers
+and will orphan in-flight ffmpeg children. Win32 Job Objects survive that;
+POSIX has no exact equivalent. Doesn't affect Ctrl+C, normal exits, or
+SIGTERM — only the hard-kill case.

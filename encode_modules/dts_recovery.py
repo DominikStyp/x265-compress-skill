@@ -51,7 +51,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .process_control import IDLE_PRIORITY_FLAGS
+from platform_compat import low_priority_popen_kwargs
 
 
 # stderr marker emitted by ffmpeg's muxer when it sees `cur_dts <= prev_dts`.
@@ -128,7 +128,7 @@ def attempt_dts_fix_remux(dst: Path) -> bool:
          "-bsf:v", v_bsf,
          "-f", "mpegts", str(ts_path)],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        creationflags=IDLE_PRIORITY_FLAGS,
+        **low_priority_popen_kwargs(),
     )
     if r1.returncode != 0:
         # Don't leave a partial ts file silently — keep it for inspection,
@@ -148,7 +148,7 @@ def attempt_dts_fix_remux(dst: Path) -> bool:
          "-avoid_negative_ts", "make_zero",
          str(new_path)],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        creationflags=IDLE_PRIORITY_FLAGS,
+        **low_priority_popen_kwargs(),
     )
     if r2.returncode != 0:
         print(f"[DTS-fix] Remux back to mkv failed (rc={r2.returncode}); "

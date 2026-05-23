@@ -27,9 +27,9 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from compress_modules.bat_writer import write_bat
 from compress_modules.plan import pick_parallel, plan_encode
 from compress_modules.probe import analyse
+from compress_modules.script_writer import write_script
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -152,7 +152,7 @@ def main() -> int:
     if args.max_size_percent is not None and source_path.is_file():
         max_output_bytes = int(source_path.stat().st_size * args.max_size_percent / 100)
 
-    write_bat(
+    write_script(
         info, plan, source_path,
         resumable=args.resumable, segment_seconds=segment_seconds,
         parallel=parallel,
@@ -167,7 +167,10 @@ def main() -> int:
     )
 
     print(json.dumps({
-        "bat_path": plan.bat_path,
+        "script_path": plan.script_path,
+        # Back-compat alias — queue runners written before the macOS port
+        # still read summary["bat_path"]; same value, friendlier name first.
+        "bat_path": plan.script_path,
         "input_path": str(source_path),
         "output_path": plan.output_path,
         "source": asdict(info),
