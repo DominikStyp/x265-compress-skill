@@ -109,16 +109,28 @@ def _try_install_windows() -> bool:
 
 
 def _print_linux_instructions() -> None:
-    """Linux installs need sudo — we never auto-elevate from a plugin hook.
-    Print the right command for the detected package manager."""
+    """Linux installs need root — we never auto-elevate from a plugin hook.
+    Print the right command for the detected package manager.
+
+    `sudo` prefix is omitted when we're already root (minimal containers,
+    server boxes) since `sudo` may not even be installed there."""
+    # os.geteuid() exists on POSIX only — fine here since this function
+    # only runs when sys.platform is neither "darwin" nor "win32".
+    sudo = "" if os.geteuid() == 0 else "sudo "
     _emit("ffmpeg not found. Install with one of:")
-    if shutil.which("apt-get"):
-        _emit("  sudo apt install ffmpeg")
-    if shutil.which("dnf"):
-        _emit("  sudo dnf install ffmpeg")
-    if shutil.which("pacman"):
-        _emit("  sudo pacman -S ffmpeg")
-    if not any(shutil.which(p) for p in ("apt-get", "dnf", "pacman")):
+    managers = [
+        ("apt-get", f"{sudo}apt install ffmpeg"),           # Debian/Ubuntu
+        ("dnf",     f"{sudo}dnf install ffmpeg"),           # Fedora/RHEL
+        ("pacman",  f"{sudo}pacman -S ffmpeg"),             # Arch
+        ("zypper",  f"{sudo}zypper install ffmpeg"),        # openSUSE
+        ("apk",     f"{sudo}apk add ffmpeg"),               # Alpine
+    ]
+    found_any = False
+    for binary, cmd in managers:
+        if shutil.which(binary):
+            _emit(f"  {cmd}")
+            found_any = True
+    if not found_any:
         _emit("  (no supported package manager detected; install manually "
               "from https://ffmpeg.org/download.html)")
 

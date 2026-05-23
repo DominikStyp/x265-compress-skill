@@ -46,6 +46,15 @@ if [ "${1:-}" = "--yes" ] || [ "${INSTALL_YES:-}" = "1" ] || [ "${CI:-}" = "1" ]
     AUTO_YES=1
 fi
 
+# --- sudo prefix ------------------------------------------------------------
+# Linux package installs need root. Wrap apt/dnf/etc. in $SUDO so the
+# installer also works (a) when run as root (minimal containers where
+# sudo isn't installed), and (b) for normal users (sudo prompts once).
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+    SUDO="sudo "
+fi
+
 C_GREEN='\033[32;1m'
 C_RED='\033[31;1m'
 C_YELLOW='\033[33;1m'
@@ -81,7 +90,13 @@ if [ "$NEEDS_CLONE" = "1" ]; then
         err "git not found on PATH — required to clone the repo."
         case "$(uname -s)" in
             Darwin) echo "    Install: xcode-select --install   (or brew install git)" ;;
-            Linux)  echo "    Install: sudo apt install git   /   sudo dnf install git" ;;
+            Linux)
+                echo "    Install (pick one matching your distro):"
+                echo "      ${SUDO}apt install git           # Debian/Ubuntu"
+                echo "      ${SUDO}dnf install git           # Fedora/RHEL"
+                echo "      ${SUDO}pacman -S git             # Arch"
+                echo "      ${SUDO}zypper install git        # openSUSE"
+                echo "      ${SUDO}apk add git               # Alpine" ;;
         esac
         exit 1
     fi
@@ -123,6 +138,23 @@ PY_MAJOR=$(echo "$PY_VER" | cut -d. -f1)
 PY_MINOR=$(echo "$PY_VER" | cut -d. -f2)
 if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 9 ]; }; then
     err "Python 3.9+ required, found $PY_VER."
+    case "$(uname -s)" in
+        Linux)
+            if command -v apt-get >/dev/null 2>&1; then
+                echo "    Ubuntu 20.04 ships Python 3.8 by default. Install a newer Python:"
+                echo "      ${SUDO}apt install -y python3.10"
+                echo "      (Ubuntu 20.04 needs deadsnakes first:"
+                echo "       ${SUDO}add-apt-repository -y ppa:deadsnakes/ppa && ${SUDO}apt update)"
+                echo "    Or upgrade to Ubuntu 22.04+ which ships Python 3.10+,"
+                echo "    or use pyenv (https://github.com/pyenv/pyenv) for per-user Python versions."
+            elif command -v dnf >/dev/null 2>&1; then
+                echo "    Install a newer Python: ${SUDO}dnf install -y python3.11"
+            elif command -v pacman >/dev/null 2>&1; then
+                echo "    Install: ${SUDO}pacman -S python   (Arch ships the latest already)"
+            fi ;;
+        Darwin)
+            echo "    Install via Homebrew: brew install python  (ships current Python 3)" ;;
+    esac
     exit 1
 fi
 info "Python $PY_VER OK"
@@ -160,15 +192,21 @@ install_ffmpeg() {
         Linux)
             if command -v apt-get >/dev/null 2>&1; then
                 info "Installing ffmpeg via apt..."
-                sudo apt-get update && sudo apt-get install -y ffmpeg
+                ${SUDO}apt-get update && ${SUDO}apt-get install -y ffmpeg
             elif command -v dnf >/dev/null 2>&1; then
                 info "Installing ffmpeg via dnf..."
-                sudo dnf install -y ffmpeg
+                ${SUDO}dnf install -y ffmpeg
             elif command -v pacman >/dev/null 2>&1; then
                 info "Installing ffmpeg via pacman..."
-                sudo pacman -S --noconfirm ffmpeg
+                ${SUDO}pacman -S --noconfirm ffmpeg
+            elif command -v zypper >/dev/null 2>&1; then
+                info "Installing ffmpeg via zypper..."
+                ${SUDO}zypper --non-interactive install ffmpeg
+            elif command -v apk >/dev/null 2>&1; then
+                info "Installing ffmpeg via apk..."
+                ${SUDO}apk add --no-cache ffmpeg
             else
-                err "No supported package manager (apt/dnf/pacman). Install ffmpeg manually."
+                err "No supported package manager (apt/dnf/pacman/zypper/apk). Install ffmpeg manually."
                 exit 1
             fi ;;
         *)
