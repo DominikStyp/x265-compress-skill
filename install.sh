@@ -1,17 +1,44 @@
 #!/usr/bin/env bash
 # x265-compress-skill installer (macOS / Linux).
 #
-# Idempotent — safe to re-run. Checks Python + ffmpeg + ffprobe, offers
-# to install ffmpeg via the system package manager if missing, runs a
-# smoke import test, prints next steps.
+# Two ways to invoke:
+#   1. Curl-piped (fresh machine, no clone yet):
+#        curl -fsSL https://raw.githubusercontent.com/DominikStyp/x265-compress-skill/master/install.sh | bash
+#      Will clone the repo into ~/.claude/skills/ffmpeg-compress-video, then
+#      verify deps and run a smoke test.
 #
-# Auto-yes mode: pass --yes (or set $CI=1) to accept every prompt.
+#   2. Inside an existing clone (re-run after git pull, etc.):
+#        bash install.sh
+#      Skips the clone step, just verifies deps + smoke test.
+#
+# Non-interactive mode (for CI / automation):
+#   - Pass --yes:    curl ... | bash -s -- --yes
+#   - Or env var:    INSTALL_YES=1 curl ... | bash
+#   - Or CI=1 is honoured the same way.
+#
+# Override the install location:
+#   - SKILL_DIR=/some/where curl ... | bash
+#   - Defaults to $HOME/.claude/skills/ffmpeg-compress-video.
 
 set -euo pipefail
 
-SKILL_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+REPO_URL="https://github.com/DominikStyp/x265-compress-skill.git"
+DEFAULT_SKILL_DIR="$HOME/.claude/skills/ffmpeg-compress-video"
+
+# --- Detect: are we running from inside a clone, or piped fresh? ------------
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+SCRIPT_DIR="$( cd "$( dirname "$SCRIPT_PATH" )" 2>/dev/null && pwd )" || SCRIPT_DIR=""
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/SKILL.md" ]; then
+    SKILL_DIR="$SCRIPT_DIR"
+    NEEDS_CLONE=0
+else
+    SKILL_DIR="${SKILL_DIR:-$DEFAULT_SKILL_DIR}"
+    NEEDS_CLONE=1
+fi
+
+# --- Non-interactive flag ---------------------------------------------------
 AUTO_YES=0
-if [ "${1:-}" = "--yes" ] || [ "${CI:-}" = "1" ]; then
+if [ "${1:-}" = "--yes" ] || [ "${INSTALL_YES:-}" = "1" ] || [ "${CI:-}" = "1" ]; then
     AUTO_YES=1
 fi
 
@@ -24,22 +51,64 @@ info()    { printf "${C_GREEN}==>${C_RESET} %s\n" "$*"; }
 warn()    { printf "${C_YELLOW}!!${C_RESET}  %s\n" "$*"; }
 err()     { printf "${C_RED}ERR${C_RESET} %s\n" "$*" >&2; }
 
+# Read with /dev/tty fallback so prompts work even when stdin is the install
+# script itself (the curl|bash case).
 confirm() {
-    # confirm "Question text"  ->  returns 0 on yes, 1 on no
     [ "$AUTO_YES" = "1" ] && return 0
-    printf "    %s [Y/n] " "$1"
-    read -r ans
+    if [ -t 0 ]; then
+        printf "    %s [Y/n] " "$1"
+        read -r ans
+    elif [ -c /dev/tty ]; then
+        printf "    %s [Y/n] " "$1" > /dev/tty
+        read -r ans < /dev/tty
+    else
+        # No interactive input available and no AUTO_YES — bail safely.
+        warn "non-interactive shell and no --yes flag; assuming 'no'"
+        return 1
+    fi
     [[ ! "$ans" =~ ^[Nn] ]]
 }
 
 # ---------------------------------------------------------------------------
-# Step 1: Python 3.9+
+# Step 0: git (only needed for bootstrap)
+# ---------------------------------------------------------------------------
+if [ "$NEEDS_CLONE" = "1" ]; then
+    if ! command -v git >/dev/null 2>&1; then
+        err "git not found on PATH — required to clone the repo."
+        case "$(uname -s)" in
+            Darwin) echo "    Install: xcode-select --install   (or brew install git)" ;;
+            Linux)  echo "    Install: sudo apt install git   /   sudo dnf install git" ;;
+        esac
+        exit 1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 1: Clone (only when bootstrapping)
+# ---------------------------------------------------------------------------
+if [ "$NEEDS_CLONE" = "1" ]; then
+    if [ -d "$SKILL_DIR/.git" ]; then
+        info "Repo already at $SKILL_DIR — pulling latest"
+        (cd "$SKILL_DIR" && git pull --ff-only) || warn "git pull failed; continuing with existing tree"
+    elif [ -e "$SKILL_DIR" ]; then
+        err "$SKILL_DIR exists and is not a git clone — refusing to overwrite."
+        echo "    Move/delete it first, or pick a different SKILL_DIR."
+        exit 1
+    else
+        info "Cloning $REPO_URL to $SKILL_DIR"
+        mkdir -p "$(dirname "$SKILL_DIR")"
+        git clone --depth 1 "$REPO_URL" "$SKILL_DIR"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 2: Python 3.9+
 # ---------------------------------------------------------------------------
 info "Checking Python..."
 if ! command -v python3 >/dev/null 2>&1; then
     err "python3 not found on PATH."
     case "$(uname -s)" in
-        Darwin)  echo "    Install: brew install python  (or use the official installer at python.org)" ;;
+        Darwin)  echo "    Install: brew install python  (or from python.org)" ;;
         Linux)   echo "    Install: sudo apt install python3   /   sudo dnf install python3" ;;
         *)       echo "    Install Python 3.9+ from https://www.python.org/downloads/" ;;
     esac
@@ -55,7 +124,7 @@ fi
 info "Python $PY_VER OK"
 
 # ---------------------------------------------------------------------------
-# Step 2: ffmpeg + ffprobe
+# Step 3: ffmpeg + ffprobe
 # ---------------------------------------------------------------------------
 install_ffmpeg() {
     case "$(uname -s)" in
@@ -101,22 +170,13 @@ FFMPEG_VER=$(ffmpeg -version | head -n1)
 info "$FFMPEG_VER"
 
 # ---------------------------------------------------------------------------
-# Step 3: Smoke test the skill's import graph
+# Step 4: Smoke test the skill's import graph
 # ---------------------------------------------------------------------------
 info "Verifying skill imports..."
-PYTHONIOENCODING=utf-8 python3 -c "
-import sys
-sys.path.insert(0, '$SKILL_DIR')
-import platform_compat as pc
-from compress_modules import probe, plan, script_writer
-from encode_modules import encoder, display
-from queue_modules import job_runner, job_schema, queue_io
-print('  OS detected:', pc.os_name())
-print('  Script extension:', script_writer.SCRIPT_EXTENSION)
-"
+PYTHONIOENCODING=utf-8 python3 "$SKILL_DIR/_smoke_test.py" "$SKILL_DIR"
 
 # ---------------------------------------------------------------------------
-# Step 4: Where it lives + next steps
+# Step 5: Where it lives + next steps
 # ---------------------------------------------------------------------------
 info "Installation complete."
 echo

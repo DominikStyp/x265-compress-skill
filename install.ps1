@@ -1,10 +1,18 @@
 # x265-compress-skill installer (Windows).
 #
-# Idempotent — safe to re-run. Checks Python + ffmpeg + ffprobe, offers
-# to install ffmpeg via winget if missing, runs a smoke import test,
-# prints next steps.
+# Two ways to invoke:
+#   1. Pipe from web (fresh machine, no clone yet):
+#        irm https://raw.githubusercontent.com/DominikStyp/x265-compress-skill/master/install.ps1 | iex
+#      Will clone the repo into %USERPROFILE%\.claude\skills\ffmpeg-compress-video,
+#      then verify deps and run a smoke test.
 #
-# Auto-yes mode: pass -Yes to accept every prompt.
+#   2. Inside an existing clone (re-run after git pull, etc.):
+#        powershell -ExecutionPolicy Bypass -File install.ps1
+#      Skips the clone step.
+#
+# Non-interactive mode (for CI / automation):
+#   - $env:INSTALL_YES=1 ; irm ... | iex
+#   - or for the file form, pass -Yes.
 
 [CmdletBinding()]
 param(
@@ -12,20 +20,75 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$SkillDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoUrl = "https://github.com/DominikStyp/x265-compress-skill.git"
+$DefaultSkillDir = "$env:USERPROFILE\.claude\skills\ffmpeg-compress-video"
+
+# --- Detect: are we running from inside a clone, or piped fresh? ------------
+$ScriptPath = $MyInvocation.MyCommand.Path
+$ScriptDir = if ($ScriptPath) { Split-Path -Parent $ScriptPath } else { $null }
+if ($ScriptDir -and (Test-Path "$ScriptDir\SKILL.md")) {
+    $SkillDir = $ScriptDir
+    $NeedsClone = $false
+} else {
+    $SkillDir = if ($env:SKILL_DIR) { $env:SKILL_DIR } else { $DefaultSkillDir }
+    $NeedsClone = $true
+}
+
+# --- Non-interactive flag ---------------------------------------------------
+$AutoYes = $Yes -or ($env:INSTALL_YES -eq "1") -or ($env:CI -eq "1")
 
 function Write-Info($msg)  { Write-Host "==> $msg" -ForegroundColor Green }
 function Write-Warn($msg)  { Write-Host "!!  $msg" -ForegroundColor Yellow }
 function Write-Err2($msg)  { Write-Host "ERR $msg" -ForegroundColor Red }
 
 function Confirm-Prompt($question) {
-    if ($Yes) { return $true }
-    $ans = Read-Host "    $question [Y/n]"
-    return ($ans -notmatch '^[Nn]')
+    if ($AutoYes) { return $true }
+    try {
+        $ans = Read-Host "    $question [Y/n]"
+        return ($ans -notmatch '^[Nn]')
+    } catch {
+        Write-Warn "no interactive console and no -Yes flag; assuming 'no'"
+        return $false
+    }
 }
 
 # ---------------------------------------------------------------------------
-# Step 1: Python 3.9+
+# Step 0: git (only needed for bootstrap)
+# ---------------------------------------------------------------------------
+if ($NeedsClone) {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Err2 "git not found on PATH - required to clone the repo."
+        Write-Host "    Install: winget install --id Git.Git   (or from https://git-scm.com/download/win)"
+        exit 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Step 1: Clone (only when bootstrapping)
+# ---------------------------------------------------------------------------
+if ($NeedsClone) {
+    if (Test-Path "$SkillDir\.git") {
+        Write-Info "Repo already at $SkillDir - pulling latest"
+        try {
+            Push-Location $SkillDir
+            git pull --ff-only
+        } finally {
+            Pop-Location
+        }
+    } elseif (Test-Path $SkillDir) {
+        Write-Err2 "$SkillDir exists and is not a git clone - refusing to overwrite."
+        Write-Host "    Move/delete it first, or set `$env:SKILL_DIR to a different location."
+        exit 1
+    } else {
+        Write-Info "Cloning $RepoUrl to $SkillDir"
+        $parent = Split-Path -Parent $SkillDir
+        if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        git clone --depth 1 $RepoUrl $SkillDir
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Step 2: Python 3.9+
 # ---------------------------------------------------------------------------
 Write-Info "Checking Python..."
 $python = Get-Command python -ErrorAction SilentlyContinue
@@ -45,7 +108,7 @@ if ($major -lt 3 -or ($major -eq 3 -and $minor -lt 9)) {
 Write-Info "Python $pyVerOutput OK"
 
 # ---------------------------------------------------------------------------
-# Step 2: ffmpeg + ffprobe
+# Step 3: ffmpeg + ffprobe
 # ---------------------------------------------------------------------------
 function Install-FFmpeg {
     $winget = Get-Command winget -ErrorAction SilentlyContinue
@@ -56,9 +119,9 @@ function Install-FFmpeg {
     Write-Info "Installing ffmpeg via winget (Gyan.FFmpeg)..."
     & winget install --id Gyan.FFmpeg --silent --scope user `
         --accept-package-agreements --accept-source-agreements
-    # winget --scope user puts shims in %LOCALAPPDATA%\Microsoft\WinGet\Links
+    # winget --scope user puts shims under %LOCALAPPDATA%\Microsoft\WinGet\Links
     # which is on PATH after the next shell start. For this session, refresh
-    # PATH from registry so the post-install verify can find ffmpeg.
+    # PATH from the registry so the post-install verify finds ffmpeg.
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path','User') + `
                 ';' + [System.Environment]::GetEnvironmentVariable('Path','Machine')
 }
@@ -70,7 +133,6 @@ if (-not $ffmpeg -or -not $ffprobe) {
     Write-Warn "ffmpeg/ffprobe not on PATH."
     if (Confirm-Prompt "Install ffmpeg now via winget?") {
         Install-FFmpeg
-        # Re-check after install
         $ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
         if (-not $ffmpeg) {
             Write-Warn "ffmpeg installed but not yet on PATH for this shell session."
@@ -86,23 +148,14 @@ $ffmpegVer = (& ffmpeg -version | Select-Object -First 1)
 Write-Info "$ffmpegVer"
 
 # ---------------------------------------------------------------------------
-# Step 3: Smoke test the skill's import graph
+# Step 4: Smoke test the skill's import graph
 # ---------------------------------------------------------------------------
 Write-Info "Verifying skill imports..."
 $env:PYTHONIOENCODING = "utf-8"
-& python -c @"
-import sys
-sys.path.insert(0, r'$SkillDir')
-import platform_compat as pc
-from compress_modules import probe, plan, script_writer
-from encode_modules import encoder, display
-from queue_modules import job_runner, job_schema, queue_io
-print('  OS detected:', pc.os_name())
-print('  Script extension:', script_writer.SCRIPT_EXTENSION)
-"@
+& python "$SkillDir\_smoke_test.py" $SkillDir
 
 # ---------------------------------------------------------------------------
-# Step 4: Where it lives + next steps
+# Step 5: Where it lives + next steps
 # ---------------------------------------------------------------------------
 Write-Info "Installation complete."
 Write-Host ""
@@ -114,7 +167,7 @@ Write-Host "      'shrink this mp4'"
 Write-Host "      'compress all videos in <folder>'"
 Write-Host ""
 Write-Host "    Standalone (no Claude Code):"
-Write-Host "      python `"$SkillDir\compress.py`" `"C:\path\to\video.mp4`" --resumable"
+Write-Host ('      python "' + $SkillDir + '\compress.py" "C:\path\to\video.mp4" --resumable')
 Write-Host ""
-Write-Host "    See $SkillDir\SKILL.md for the agent playbook,"
-Write-Host "    and $SkillDir\docs\AGENT_QUEUE_RECIPES.md for queue.json templates."
+Write-Host ("    See " + $SkillDir + "\SKILL.md for the agent playbook,")
+Write-Host ("    and " + $SkillDir + "\docs\AGENT_QUEUE_RECIPES.md for queue.json templates.")

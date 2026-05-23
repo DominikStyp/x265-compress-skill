@@ -35,30 +35,45 @@ scripts run standalone from any shell.
 
 ## Install
 
-One-liner that clones the repo into your Claude Code skills directory
-and runs the bundled installer (which checks Python, offers to install
-ffmpeg via `brew` / `apt` / `dnf` / `winget` if it's missing, and runs
-a smoke import test):
+Single-line install. The installer auto-clones the repo into your
+Claude Code skills directory, checks Python, offers to install ffmpeg
+via the system package manager (`brew` / `apt` / `dnf` / `pacman` /
+`winget`) if it's missing, then runs an import smoke test.
 
 **macOS / Linux**
 
 ```bash
-git clone git@github.com:DominikStyp/x265-compress-skill.git ~/.claude/skills/ffmpeg-compress-video && bash ~/.claude/skills/ffmpeg-compress-video/install.sh
+curl -fsSL https://raw.githubusercontent.com/DominikStyp/x265-compress-skill/master/install.sh | bash
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-git clone git@github.com:DominikStyp/x265-compress-skill.git "$env:USERPROFILE\.claude\skills\ffmpeg-compress-video"; if ($?) { powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\skills\ffmpeg-compress-video\install.ps1" }
+irm https://raw.githubusercontent.com/DominikStyp/x265-compress-skill/master/install.ps1 | iex
 ```
 
-Pass `--yes` (POSIX) or `-Yes` (PowerShell) to the installer to skip
-every confirmation prompt — useful for automation / CI.
+Non-interactive (CI / automation):
+
+```bash
+INSTALL_YES=1 curl -fsSL https://raw.githubusercontent.com/DominikStyp/x265-compress-skill/master/install.sh | bash
+```
+
+```powershell
+$env:INSTALL_YES=1; irm https://raw.githubusercontent.com/DominikStyp/x265-compress-skill/master/install.ps1 | iex
+```
+
+Override the install location with `SKILL_DIR=/some/where` (POSIX) or
+`$env:SKILL_DIR="..."` (PowerShell). Default is
+`~/.claude/skills/ffmpeg-compress-video/`.
 
 After install, restart Claude Code (or run `/skills` to refresh). The
 skill activates automatically via the `name:` / `description:`
 frontmatter in `SKILL.md` on prompts like *"compress this video"*,
 *"shrink this mp4"*, *"compress everything in this folder"*.
+
+Re-running the installer inside an existing clone is supported — it
+detects the clone via a sibling `SKILL.md`, skips the clone step, and
+just verifies deps. Useful after `git pull` to confirm nothing broke.
 
 Standalone use without Claude Code is also fine — clone anywhere, run
 the installer, then invoke `compress.py` / `run_queue.py` directly.
