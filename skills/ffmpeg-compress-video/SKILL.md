@@ -13,6 +13,17 @@ OS-specific behaviour (priority class, suspend syscall, script extension, shell 
 
 Use this decision tree when the user invokes the skill. Detailed schemas and edge cases are linked.
 
+### 0. First-use dependency check (~2 s)
+
+Before invoking `compress.py`, run `ffmpeg -version` to confirm ffmpeg is available. The plugin's `SessionStart` hook (`hooks/check_ffmpeg.py`) auto-installs ffmpeg via `brew` (macOS) or `winget --scope user` (Windows) on session start, but the hook runs async and Linux installs need sudo — so always verify before encoding.
+
+If `ffmpeg -version` fails:
+- **macOS**: offer to run `brew install ffmpeg`
+- **Windows**: offer to run `winget install --id Gyan.FFmpeg --scope user`
+- **Linux**: print `sudo apt install ffmpeg` (or `dnf install ffmpeg`); don't auto-elevate
+
+After install (especially on Windows with `--scope user`) the user may need to restart their shell/Claude Code session for ffmpeg to be on PATH.
+
 ### 1. The user has ONE video → single-file mode
 
 ```

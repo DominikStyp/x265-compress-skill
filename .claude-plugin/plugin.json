@@ -1,6 +1,6 @@
 {
   "name": "ffmpeg-compress-video",
-  "description": "Resumable x265 chunked video encoder with parallel chunks, htop-style pause/resume, source-corruption guard with surgical h264 patching, choke detection, VMAF/PSNR/SSIM scoring, DTS-collision auto-recovery, and a live-reloadable JSON queue runner. Cross-platform (Windows / macOS / Linux) — OS-specific behaviour auto-detected by the platform_compat package.",
+  "description": "Resumable x265 chunked video encoder with parallel chunks, htop-style pause/resume, source-corruption guard with surgical h264 patching, choke detection, VMAF/PSNR/SSIM scoring, DTS-collision auto-recovery, and a live-reloadable JSON queue runner. Cross-platform (Windows / macOS / Linux) - OS-specific behaviour auto-detected by the platform_compat package.",
   "version": "1.0.0",
   "author": {
     "name": "DominikStyp"
@@ -13,5 +13,18 @@
     "hevc",
     "video-compression",
     "vmaf"
-  ]
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/check_ffmpeg.py\""
+          }
+        ]
+      }
+    ]
+  }
 }

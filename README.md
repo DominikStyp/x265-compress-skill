@@ -46,8 +46,16 @@ Inside Claude Code, run:
 ```
 
 Claude Code clones the repo, reads `.claude-plugin/plugin.json`, and
-loads the bundled skill. **Assumes ffmpeg + ffprobe are already on your
-PATH** — the plugin system doesn't run install hooks.
+loads the bundled skill. After the install, **restart Claude Code**
+once — the bundled `SessionStart` hook (`hooks/check_ffmpeg.py`) fires
+on next session start and:
+
+- **macOS**: auto-installs ffmpeg via `brew install ffmpeg` if missing
+- **Windows**: auto-installs ffmpeg via `winget install --scope user Gyan.FFmpeg` if missing
+- **Linux**: prints `sudo apt install ffmpeg` (or dnf/pacman) — sudo
+  isn't auto-elevated from plugin hooks for safety
+
+If ffmpeg's already installed: the hook is a fast no-op (silent).
 
 To uninstall: `/plugin uninstall ffmpeg-compress-video`.
 
