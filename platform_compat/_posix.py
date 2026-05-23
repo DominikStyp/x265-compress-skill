@@ -1,7 +1,10 @@
 """POSIX backend for platform_compat. Covers macOS and Linux.
 
 Almost everything maps to standard POSIX primitives:
-  - Subprocess priority: os.nice(19) via preexec_fn
+  - Subprocess priority: `nice -n 19` cmd wrapper + start_new_session=True.
+                         Intentionally NOT preexec_fn — that's flagged as
+                         unsafe with threads in Python's docs and macOS is
+                         particularly sensitive to fork+threads.
   - Suspend / resume:    SIGSTOP / SIGCONT
   - ANSI:                native — no-op
   - Lifetime tracking:   process group + atexit/signal handlers
@@ -28,27 +31,35 @@ from typing import Optional
 
 # --- Subprocess priority ----------------------------------------------------
 
-def _preexec_low_priority() -> None:
-    """Runs in the child after fork but before the program image is loaded.
-    Lowers priority to nice 19 and puts the child in its own process group
-    so the parent can clean it up with killpg.
-
-    Failures are swallowed — we don't want to abort an encode because a
-    cosmetic priority change couldn't be applied (e.g. sandbox blocks nice)."""
-    try:
-        os.nice(19)
-    except (OSError, PermissionError):
-        pass
-    try:
-        os.setpgrp()
-    except OSError:
-        pass
-
-
 def low_priority_popen_kwargs() -> dict:
-    """Returns subprocess.Popen kwargs that lower the child's CPU priority
-    to nice 19 and put it in its own process group."""
-    return {"preexec_fn": _preexec_low_priority}
+    """Returns subprocess.Popen kwargs paired with `wrap_cmd_for_low_priority`.
+
+    `start_new_session=True` puts the child in its own session+pgid (via
+    setsid in posix_spawn) so the parent can clean it up with killpg. This
+    AVOIDS preexec_fn — Python's docs flag preexec_fn as unsafe in the
+    presence of threads (and the encoder is heavily multi-threaded:
+    display, workers, keyboard listener). macOS specifically is sensitive
+    to fork+threads, where the child can inherit locked state from the
+    parent. start_new_session goes through posix_spawn instead, which is
+    thread-safe.
+
+    The nice-19 priority is applied by `wrap_cmd_for_low_priority` (which
+    prepends a `nice -n 19` to the cmd) — also no preexec_fn involved."""
+    return {"start_new_session": True}
+
+
+def wrap_cmd_for_low_priority(cmd: list) -> list:
+    """Prepend `nice -n 19` so the child runs at idle CPU priority.
+
+    `nice` is a POSIX standard utility — always available on macOS and
+    every Linux distro. Wrapping at the command level (rather than calling
+    os.nice in preexec_fn) sidesteps the thread-safety issue documented
+    on `low_priority_popen_kwargs`.
+
+    Returns a new list; doesn't mutate the input. If `nice` is somehow
+    unavailable, the wrapped command will fail with ENOENT and the caller
+    will see the error — better than silently running at normal priority."""
+    return ["nice", "-n", "19", *cmd]
 
 
 # --- Process suspend/resume -------------------------------------------------

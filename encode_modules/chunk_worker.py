@@ -19,7 +19,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from platform_compat import low_priority_popen_kwargs
+from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
 from .chunking import ffmpeg_chunk_cmd
 from .chunk_recovery import _quarantine_part
@@ -66,9 +66,11 @@ def _encode_one_chunk_with_display(slot: int, chunk: Path, workdir: Path,
 
     start = time.monotonic()
     proc = subprocess.Popen(
-        ffmpeg_chunk_cmd(chunk, part, crf=crf, preset=preset,
-                         pix_fmt=pix_fmt, x265_params=x265_params,
-                         extra_progress=["-progress", "-"]),
+        wrap_cmd_for_low_priority(
+            ffmpeg_chunk_cmd(chunk, part, crf=crf, preset=preset,
+                             pix_fmt=pix_fmt, x265_params=x265_params,
+                             extra_progress=["-progress", "-"])
+        ),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace",
         **low_priority_popen_kwargs(),

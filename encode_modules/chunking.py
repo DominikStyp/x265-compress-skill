@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from platform_compat import low_priority_popen_kwargs
+from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
 
 def split_source(src: Path, workdir: Path, seg_sec: int) -> list[Path]:
@@ -31,7 +31,7 @@ def split_source(src: Path, workdir: Path, seg_sec: int) -> list[Path]:
 
     workdir.mkdir(parents=True, exist_ok=True)
     print(f"[1/4] Splitting source losslessly into ~{seg_sec}-sec chunks...")
-    r = subprocess.run([
+    r = subprocess.run(wrap_cmd_for_low_priority([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-i", str(src),
         "-map", "0", "-map", "-0:d",
@@ -40,7 +40,7 @@ def split_source(src: Path, workdir: Path, seg_sec: int) -> list[Path]:
         "-segment_time", str(seg_sec),
         "-reset_timestamps", "1",
         str(workdir / "src_%04d.mkv"),
-    ], **low_priority_popen_kwargs())
+    ]), **low_priority_popen_kwargs())
     if r.returncode != 0:
         sys.exit(f"ERROR: segmenter failed (exit {r.returncode})")
     flag.touch()
@@ -179,13 +179,13 @@ def concat_chunks(workdir: Path, dst: Path) -> None:
         "\n".join(f"file '{c.resolve().as_posix()}'" for c in encs) + "\n",
         encoding="utf-8",
     )
-    r = subprocess.run([
+    r = subprocess.run(wrap_cmd_for_low_priority([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-f", "concat", "-safe", "0",
         "-i", str(concat_list),
         "-c", "copy",
         str(dst),
-    ], **low_priority_popen_kwargs())
+    ]), **low_priority_popen_kwargs())
     if r.returncode != 0:
         sys.exit(f"ERROR: concat failed (exit {r.returncode})")
 

@@ -10,12 +10,22 @@ Exported names (all backends provide them):
   Detection flags
       IS_WINDOWS, IS_MACOS, IS_LINUX, IS_POSIX
 
-  Subprocess priority
+  Subprocess priority — use the two helpers TOGETHER:
+      wrap_cmd_for_low_priority(cmd) -> list
+          Win32: returns cmd unchanged (priority is set via creationflags).
+          POSIX: returns ['nice', '-n', '19'] + cmd. Avoids preexec_fn so
+                 we sidestep Python's "preexec_fn is not safe with threads"
+                 caveat (especially relevant on macOS).
       low_priority_popen_kwargs() -> dict
-          Pass via ``**low_priority_popen_kwargs()`` to subprocess.Popen.
-          Win32: returns {creationflags: IDLE_PRIORITY_CLASS}.
-          POSIX: returns {preexec_fn: ...} that nice()s the child + puts
-                 it in its own process group.
+          Win32: {creationflags: IDLE_PRIORITY_CLASS}
+          POSIX: {start_new_session: True}  -- new pgid so killpg works.
+
+      Idiomatic spawn:
+          subprocess.Popen(
+              wrap_cmd_for_low_priority(cmd),
+              **low_priority_popen_kwargs(),
+              ...,
+          )
 
   Process suspend/resume (htop-style pause)
       suspend_pid(pid) -> bool
@@ -64,6 +74,7 @@ else:
 
 # Re-export the backend's API. Every backend module provides these exact names.
 low_priority_popen_kwargs = _backend.low_priority_popen_kwargs
+wrap_cmd_for_low_priority = _backend.wrap_cmd_for_low_priority
 suspend_pid = _backend.suspend_pid
 resume_pid = _backend.resume_pid
 enable_ansi = _backend.enable_ansi

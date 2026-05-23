@@ -180,7 +180,7 @@ else in the codebase changes.
 
 | Concern | Windows backend | POSIX backend (macOS / Linux) |
 |---|---|---|
-| Subprocess priority | `IDLE_PRIORITY_CLASS` creationflag | `os.nice(19)` via `preexec_fn` |
+| Subprocess priority | `IDLE_PRIORITY_CLASS` creationflag | `nice -n 19` cmd wrapper (thread-safe alt to preexec_fn) |
 | Suspend / resume | `NtSuspendProcess` / `NtResumeProcess` | `SIGSTOP` / `SIGCONT` |
 | ANSI escape support | `SetConsoleMode` VT processing | Native (no-op) |
 | Kill children with parent | Win32 Job Object (`KILL_ON_JOB_CLOSE`) | Process group + `atexit`/`SIGTERM` handler |

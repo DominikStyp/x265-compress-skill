@@ -21,6 +21,7 @@ ffmpeg before invoking compress.py as a safety net.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -37,17 +38,43 @@ def _emit(msg: str) -> None:
     print(f"[x265-compress-skill] {msg}", file=sys.stderr)
 
 
+def _find_brew() -> str | None:
+    """Locate the brew binary even when its prefix isn't yet on PATH.
+
+    On a fresh Apple Silicon Mac, `brew install` puts the binary at
+    /opt/homebrew/bin/brew but does NOT auto-add /opt/homebrew/bin to
+    PATH — the user has to add `eval "$(/opt/homebrew/bin/brew shellenv)"`
+    to their ~/.zprofile manually. Until they do, `shutil.which("brew")`
+    returns None even though brew is fully installed. Probing the two
+    canonical install prefixes catches this case."""
+    found = shutil.which("brew")
+    if found:
+        return found
+    for candidate in ("/opt/homebrew/bin/brew", "/usr/local/bin/brew"):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def _try_install_macos() -> bool:
     """brew install ffmpeg — no sudo needed, brew is user-scoped."""
-    if not shutil.which("brew"):
+    brew = _find_brew()
+    if not brew:
         _emit("ffmpeg not found and Homebrew is not installed.")
         _emit("Install Homebrew from https://brew.sh, then re-launch Claude Code.")
         return False
     _emit("ffmpeg not found. Installing via Homebrew (one-time, ~30s)...")
     try:
-        subprocess.run(["brew", "install", "ffmpeg"], check=True,
+        subprocess.run([brew, "install", "ffmpeg"], check=True,
                        stdout=subprocess.DEVNULL)
         _emit("ffmpeg installed successfully.")
+        # If brew was at /opt/homebrew/bin but not on PATH, the just-installed
+        # ffmpeg lives in the same prefix — and is also off-PATH for this
+        # session. Tell the user to refresh.
+        if not shutil.which("ffmpeg"):
+            _emit("NOTE: ffmpeg is installed but its directory isn't on PATH "
+                  "yet. Add `eval \"$(/opt/homebrew/bin/brew shellenv)\"` to "
+                  "your ~/.zprofile, then restart Claude Code.")
         return True
     except subprocess.CalledProcessError as e:
         _emit(f"brew install failed (exit {e.returncode}). "

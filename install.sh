@@ -133,9 +133,26 @@ info "Python $PY_VER OK"
 install_ffmpeg() {
     case "$(uname -s)" in
         Darwin)
-            if command -v brew >/dev/null 2>&1; then
-                info "Installing ffmpeg via Homebrew..."
-                brew install ffmpeg
+            # Find brew even if its prefix isn't yet on PATH (common on
+            # fresh Apple Silicon installs where the user hasn't run the
+            # `brew shellenv` snippet yet).
+            BREW=$(command -v brew 2>/dev/null || true)
+            if [ -z "$BREW" ]; then
+                for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+                    if [ -x "$candidate" ]; then
+                        BREW="$candidate"
+                        break
+                    fi
+                done
+            fi
+            if [ -n "$BREW" ]; then
+                info "Installing ffmpeg via Homebrew ($BREW)..."
+                "$BREW" install ffmpeg
+                # Pull brew's bin dir onto PATH for the rest of this script
+                # so the post-install ffmpeg -version check finds the binary.
+                if ! command -v ffmpeg >/dev/null 2>&1; then
+                    eval "$("$BREW" shellenv)" 2>/dev/null || true
+                fi
             else
                 err "Homebrew not found. Install from https://brew.sh first, or install ffmpeg manually from https://ffmpeg.org/download.html"
                 exit 1

@@ -41,7 +41,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from platform_compat import low_priority_popen_kwargs
+from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
 
 def _decode_walk_count(src: Path, start: float, dur: float,
@@ -51,11 +51,13 @@ def _decode_walk_count(src: Path, start: float, dur: float,
     zones by progressively narrowing the window."""
     try:
         r = subprocess.run(
-            ["ffmpeg", "-v", "error", "-hide_banner", "-xerror",
-             "-ss", f"{start}", "-i", str(src),
-             "-t", f"{dur}",
-             "-map", "0:v?",
-             "-f", "null", "-"],
+            wrap_cmd_for_low_priority(
+                ["ffmpeg", "-v", "error", "-hide_banner", "-xerror",
+                 "-ss", f"{start}", "-i", str(src),
+                 "-t", f"{dur}",
+                 "-map", "0:v?",
+                 "-f", "null", "-"]
+            ),
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=timeout_s,
             **low_priority_popen_kwargs(),
@@ -194,7 +196,8 @@ def _build_copy_segment(src: Path, start: float, end: float,
         "-f", "mpegts",
         str(out),
     ]
-    r = subprocess.run(args, capture_output=True, text=True,
+    r = subprocess.run(wrap_cmd_for_low_priority(args),
+                       capture_output=True, text=True,
                        encoding="utf-8", errors="replace",
                        **low_priority_popen_kwargs())
     return r.returncode == 0
@@ -205,7 +208,7 @@ def _build_encode_segment(src: Path, start: float, end: float,
     """Re-encode [start, end) of src into out as MPEG-TS. ffmpeg's decoder
     uses error concealment to fill in the missing refs; x264 veryfast
     CRF 14 then produces a clean near-visually-lossless segment."""
-    r = subprocess.run([
+    r = subprocess.run(wrap_cmd_for_low_priority([
         "ffmpeg", "-v", "error", "-hide_banner", "-y",
         "-ss", f"{start}",
         "-i", str(src),
@@ -216,7 +219,7 @@ def _build_encode_segment(src: Path, start: float, end: float,
         "-bsf:v", "h264_mp4toannexb",
         "-f", "mpegts",
         str(out),
-    ], capture_output=True, text=True, encoding="utf-8",
+    ]), capture_output=True, text=True, encoding="utf-8",
        errors="replace", **low_priority_popen_kwargs())
     return r.returncode == 0
 
@@ -325,7 +328,7 @@ def auto_patch_source(
     )
 
     out_mp4 = workdir / "source-patched.mp4"
-    r = subprocess.run([
+    r = subprocess.run(wrap_cmd_for_low_priority([
         "ffmpeg", "-v", "error", "-hide_banner", "-y",
         "-f", "concat", "-safe", "0",
         "-i", str(list_file),
@@ -333,7 +336,7 @@ def auto_patch_source(
         "-bsf:a", "aac_adtstoasc",
         "-movflags", "+faststart",
         str(out_mp4),
-    ], capture_output=True, text=True, encoding="utf-8",
+    ]), capture_output=True, text=True, encoding="utf-8",
        errors="replace", **low_priority_popen_kwargs())
     if r.returncode != 0:
         print(f"  ! auto-patch concat failed (rc={r.returncode})")

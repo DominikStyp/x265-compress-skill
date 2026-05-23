@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from platform_compat import low_priority_popen_kwargs
+from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
 
 def _probe_duration(src: Path) -> float:
@@ -99,11 +99,13 @@ def _walk_one_window(src: Path, start_s: float, dur_s: float,
     t0 = time.monotonic()
     try:
         r = subprocess.run(
-            ["ffmpeg", "-v", "error", "-hide_banner", "-xerror",
-             "-ss", f"{start_s}", "-i", str(src),
-             "-t", f"{dur_s}",
-             "-map", "0:v?", "-map", "0:a?",
-             "-f", "null", "-"],
+            wrap_cmd_for_low_priority(
+                ["ffmpeg", "-v", "error", "-hide_banner", "-xerror",
+                 "-ss", f"{start_s}", "-i", str(src),
+                 "-t", f"{dur_s}",
+                 "-map", "0:v?", "-map", "0:a?",
+                 "-f", "null", "-"]
+            ),
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=timeout_s,
             **low_priority_popen_kwargs(),

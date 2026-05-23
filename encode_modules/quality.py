@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 
 from .probes import fmt_dur, probe_duration, probe_fps
-from platform_compat import low_priority_popen_kwargs
+from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
 
 def _libvmaf_node_for(log_path: Path, subsample: int) -> str:
@@ -195,7 +195,7 @@ def _quality_check_run(src: Path, dst: Path, *,
 
     try:
         proc = subprocess.Popen(
-            cmd,
+            wrap_cmd_for_low_priority(cmd),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace",
             **low_priority_popen_kwargs(),

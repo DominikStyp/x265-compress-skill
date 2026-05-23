@@ -231,7 +231,7 @@ Trade-offs:
 Every ffmpeg child spawned by the skill (chunk encodes, lossless split, concat, full decode-check, libvmaf measurement) runs at low CPU priority. The exact mechanism depends on OS, dispatched via `platform_compat.low_priority_popen_kwargs()`:
 
 - **Windows**: `subprocess.IDLE_PRIORITY_CLASS` creationflag — scheduler priority 4, lower than `start /low` (BELOW_NORMAL = 6).
-- **macOS / Linux**: `os.nice(19)` via `preexec_fn`. Same effect — the scheduler only runs the encode when no other process wants CPU.
+- **macOS / Linux**: `nice -n 19` prepended to the ffmpeg cmd. Same effect — the scheduler only runs the encode when no other process wants CPU. (Wraps the cmd rather than using `preexec_fn`, which Python's docs flag as unsafe in multi-threaded contexts.)
 
 In practice this means:
 
@@ -240,7 +240,7 @@ In practice this means:
 - ffprobe and `progress.py` stay at NORMAL priority because they're sub-second / I/O-bound; touching their priority adds noise to the diff but no behavior change.
 - You'll see `CPU priority: ffmpeg runs at low priority — foreground apps (browser, editor) always preempt encode.` near the start of each encode (both serial and parallel paths).
 
-If for some reason you need ffmpeg back at NORMAL (e.g. dedicated encoding box, nothing else running), edit `low_priority_popen_kwargs()` in `platform_compat/_windows.py` (or `_posix.py`) to return `{}` — that's the only knob, and it covers every spawn site.
+If for some reason you need ffmpeg back at NORMAL (e.g. dedicated encoding box, nothing else running), edit `wrap_cmd_for_low_priority()` in `platform_compat/_posix.py` to return the cmd unchanged (or `low_priority_popen_kwargs()` on Windows to return `{}`) — those two helpers are the only knobs, and they cover every spawn site.
 
 ## Size-budget guard (`--max-size-percent N`)
 

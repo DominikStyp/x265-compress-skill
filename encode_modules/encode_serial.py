@@ -13,7 +13,12 @@ import sys
 import time
 from pathlib import Path
 
-from platform_compat import IS_POSIX, IS_WINDOWS, low_priority_popen_kwargs
+from platform_compat import (
+    IS_POSIX,
+    IS_WINDOWS,
+    low_priority_popen_kwargs,
+    wrap_cmd_for_low_priority,
+)
 
 from .chunking import ffmpeg_chunk_cmd, reorder_middle_first
 from .history_state import record_chunk_elapsed
@@ -65,9 +70,11 @@ def encode_chunks_serial(chunks: list[Path], workdir: Path, *,
 
         chunk_start = time.monotonic()
         ff = subprocess.Popen(
-            ffmpeg_chunk_cmd(chunk, part, crf=crf, preset=preset,
-                            pix_fmt=pix_fmt, x265_params=x265_params,
-                            extra_progress=["-progress", "-"]),
+            wrap_cmd_for_low_priority(
+                ffmpeg_chunk_cmd(chunk, part, crf=crf, preset=preset,
+                                pix_fmt=pix_fmt, x265_params=x265_params,
+                                extra_progress=["-progress", "-"])
+            ),
             stdout=subprocess.PIPE,
             **low_priority_popen_kwargs(),
         )

@@ -23,7 +23,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from platform_compat import low_priority_popen_kwargs
+from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
 from .probes import fmt_dur, probe_duration, probe_full
 
@@ -46,10 +46,12 @@ def decode_walk_chunk(chunk_path: Path, *,
     duration_seconds = probe_duration(chunk_path)
     try:
         r = subprocess.run(
-            ["ffmpeg", "-v", "error", "-hide_banner", "-xerror",
-             "-i", str(chunk_path),
-             "-map", "0:v?", "-map", "0:a?",
-             "-f", "null", "-"],
+            wrap_cmd_for_low_priority(
+                ["ffmpeg", "-v", "error", "-hide_banner", "-xerror",
+                 "-i", str(chunk_path),
+                 "-map", "0:v?", "-map", "0:a?",
+                 "-f", "null", "-"]
+            ),
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=timeout_s,
             **low_priority_popen_kwargs(),
@@ -98,10 +100,12 @@ def analyze_chunk_errors(chunk_path: Path, *,
     timed_out = False
     try:
         r = subprocess.run(
-            ["ffmpeg", "-v", "error", "-hide_banner", "-xerror",
-             "-i", str(chunk_path),
-             "-map", "0:v?", "-map", "0:a?",
-             "-f", "null", "-"],
+            wrap_cmd_for_low_priority(
+                ["ffmpeg", "-v", "error", "-hide_banner", "-xerror",
+                 "-i", str(chunk_path),
+                 "-map", "0:v?", "-map", "0:a?",
+                 "-f", "null", "-"]
+            ),
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=timeout_s,
             **low_priority_popen_kwargs(),
@@ -143,10 +147,12 @@ def _decode_check(path: Path) -> str | None:
     rather than scanning the rest of the file, so a bad output is detected
     quickly while a healthy one still pays the full decode cost."""
     r = subprocess.run(
-        ["ffmpeg", "-v", "error", "-hide_banner", "-xerror",
-         "-i", str(path),
-         "-map", "0:v?", "-map", "0:a?",
-         "-f", "null", "-"],
+        wrap_cmd_for_low_priority(
+            ["ffmpeg", "-v", "error", "-hide_banner", "-xerror",
+             "-i", str(path),
+             "-map", "0:v?", "-map", "0:a?",
+             "-f", "null", "-"]
+        ),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         **low_priority_popen_kwargs(),
     )

@@ -51,7 +51,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from platform_compat import low_priority_popen_kwargs
+from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
 
 # stderr marker emitted by ffmpeg's muxer when it sees `cur_dts <= prev_dts`.
@@ -122,11 +122,13 @@ def attempt_dts_fix_remux(dst: Path) -> bool:
 
     # Leg 1: mkv -> mpegts. Strips container-level DTS quirks.
     r1 = subprocess.run(
-        ["ffmpeg", "-v", "error", "-hide_banner", "-y",
-         "-i", str(dst),
-         "-c", "copy",
-         "-bsf:v", v_bsf,
-         "-f", "mpegts", str(ts_path)],
+        wrap_cmd_for_low_priority(
+            ["ffmpeg", "-v", "error", "-hide_banner", "-y",
+             "-i", str(dst),
+             "-c", "copy",
+             "-bsf:v", v_bsf,
+             "-f", "mpegts", str(ts_path)]
+        ),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         **low_priority_popen_kwargs(),
     )
@@ -140,13 +142,15 @@ def attempt_dts_fix_remux(dst: Path) -> bool:
 
     # Leg 2: mpegts -> mkv with regenerated PTS/DTS.
     r2 = subprocess.run(
-        ["ffmpeg", "-v", "error", "-hide_banner", "-y",
-         "-fflags", "+genpts",
-         "-i", str(ts_path),
-         "-c", "copy",
-         "-bsf:a", "aac_adtstoasc",
-         "-avoid_negative_ts", "make_zero",
-         str(new_path)],
+        wrap_cmd_for_low_priority(
+            ["ffmpeg", "-v", "error", "-hide_banner", "-y",
+             "-fflags", "+genpts",
+             "-i", str(ts_path),
+             "-c", "copy",
+             "-bsf:a", "aac_adtstoasc",
+             "-avoid_negative_ts", "make_zero",
+             str(new_path)]
+        ),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         **low_priority_popen_kwargs(),
     )

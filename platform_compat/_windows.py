@@ -28,6 +28,20 @@ def low_priority_popen_kwargs() -> dict:
     return {"creationflags": _IDLE_PRIORITY_FLAGS}
 
 
+def wrap_cmd_for_low_priority(cmd: list) -> list:
+    """No-op on Windows — priority is set via the creationflags returned
+    by `low_priority_popen_kwargs()`. The function exists as a companion
+    so callers can write OS-agnostic spawn code:
+
+        subprocess.Popen(
+            wrap_cmd_for_low_priority(cmd),
+            **low_priority_popen_kwargs(),
+        )
+
+    Returns the cmd unchanged."""
+    return list(cmd)
+
+
 # --- Process suspend/resume -------------------------------------------------
 
 _PROCESS_SUSPEND_RESUME = 0x0800
