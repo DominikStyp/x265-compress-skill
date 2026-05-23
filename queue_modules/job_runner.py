@@ -1,0 +1,168 @@
+"""Per-job execution: invoke compress.py to produce a .bat, then run the .bat,
+then build the report row.
+
+Extracted from run_queue.main()'s while-loop so the loop itself stays focused
+on what to do *between* jobs (live-reload, skip rules, summary stats).
+"""
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+from .job_schema import build_compress_argv
+
+
+# Exit-code -> status mapping. Matches encode_resumable.py's sys.exit values.
+# Keep in sync if new exit codes appear there.
+_EXIT_STATUS: dict[int, str] = {
+    0: "ok",
+    3: "stopped-threshold",
+    5: "chunk-choked",        # legacy whole-file abort, kept for back-compat
+    6: "pre-flight-failed",
+    7: "awaiting-chunk-fix",
+}
+
+
+def status_for_exit(rc: int) -> str:
+    """Translate an encode_resumable.py exit code to the status string used
+    in the queue report. Unknown codes fall through as `failed-exit-<N>`."""
+    return _EXIT_STATUS.get(rc, f"failed-exit-{rc}")
+
+
+def generate_bat(compress_py: Path, merged_job: dict
+                ) -> tuple[int, dict | None, str]:
+    """Run compress.py to produce the encoder .bat. Returns (rc, summary_dict
+    or None, stderr_tail). On success the summary dict carries `bat_path`
+    plus the JSON-serialized SourceInfo/EncodePlan."""
+    argv = build_compress_argv(merged_job) + ["--no-report", "--no-pause"]
+    gen = subprocess.run(
+        [sys.executable, str(compress_py), *argv],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    if gen.returncode != 0:
+        return gen.returncode, None, gen.stderr.strip()
+    try:
+        return 0, json.loads(gen.stdout), ""
+    except Exception as e:
+        return 0, None, f"parse error: {e}"
+
+
+def run_bat(bat_path: str) -> tuple[int, float]:
+    """Run the .bat that compress.py just wrote. Returns (exit_code,
+    elapsed_seconds).
+
+    `stdin` is INHERITED (not redirected to DEVNULL) so the encoder's
+    interactive keyboard control (↑↓/Space/1-9/r) can read keypresses
+    through cmd → bat → python.
+
+    The `call` prefix matters when the bat path contains `&` (or any of
+    `<>()@^|`). Without it, `cmd /c "path with & in it.bat"` triggers cmd's
+    quote-stripping rule (see `cmd /?` rule 2): leading quote stripped,
+    trailing quote stripped, then cmd parses `path with & in it.bat` as
+    TWO commands separated by `&`. With `cmd /c call "path"`, the first
+    token after /c is `call`, not `"`, so rule 2 never fires."""
+    t0 = time.monotonic()
+    rc = subprocess.call(["cmd.exe", "/c", "call", bat_path])
+    return rc, time.monotonic() - t0
+
+
+def read_quality_sidecar(out_path: Path) -> dict | None:
+    """Read the VMAF/PSNR/SSIM sidecar `encode_resumable.py` writes next to
+    a successful output. Returns None when the sidecar is missing or
+    unreadable — caller fills the report row with placeholders."""
+    sidecar = out_path.parent / ".tmp" / f"{out_path.stem}.quality.json"
+    if not sidecar.exists():
+        return None
+    try:
+        return json.loads(sidecar.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _placeholder_row(input_path: Path, in_bytes: int, merged: dict,
+                    status: str) -> dict:
+    """Common skeleton row for non-ok statuses (skipped, failed, etc).
+    output_bytes / elapsed_seconds are None — there's nothing to report."""
+    return {
+        "input": str(input_path), "output": None,
+        "input_bytes": in_bytes, "output_bytes": None,
+        "crf": merged.get("crf"), "preset": merged.get("preset"),
+        "parallel": merged.get("parallel"),
+        "max_size_percent": merged.get("max_size_percent"),
+        "elapsed_seconds": None, "status": status,
+    }
+
+
+def build_job_row(*, input_path: Path, out_path: Path,
+                 in_bytes: int, merged: dict,
+                 status: str, elapsed: float,
+                 summary: dict | None) -> dict:
+    """Build the per-job dict for the aggregate report. Includes quality
+    scores from the sidecar when status == 'ok' and the sidecar exists."""
+    output_bytes = out_path.stat().st_size if out_path.exists() else None
+    plan = (summary or {}).get("plan") or {}
+    row: dict = {
+        "input": str(input_path),
+        "output": str(out_path) if status == "ok" else None,
+        "input_bytes": in_bytes,
+        "output_bytes": output_bytes,
+        "crf": plan.get("crf") or merged.get("crf"),
+        "preset": plan.get("preset") or merged.get("preset"),
+        "parallel": merged.get("parallel"),
+        "max_size_percent": merged.get("max_size_percent"),
+        "elapsed_seconds": elapsed,
+        "status": status,
+    }
+    if status == "ok":
+        q = read_quality_sidecar(out_path)
+        if q is not None:
+            row["vmaf_mean"] = q.get("vmaf_mean")
+            row["vmaf_min"] = q.get("vmaf_min")
+            row["psnr_y_mean"] = q.get("psnr_y_mean")
+            row["ssim_mean"] = q.get("ssim_mean")
+            row["quality_method"] = q.get("method")
+    return row
+
+
+def run_one_job(*, compress_py: Path, merged: dict,
+               i: int, n: int) -> tuple[str, dict]:
+    """Execute a single queue job end-to-end. Returns (status, report_row).
+
+    Steps: print header → compress.py to generate .bat → cmd /c call .bat
+    → translate exit code to status → read quality sidecar → build row.
+    Bails to `failed-gen` / `failed-parse` rows if compress.py itself
+    failed; bails to `skipped-not-found` / `skipped-exists` upstream of
+    this function (run_queue.main owns those guards)."""
+    input_path = Path(merged["input"])
+    in_bytes = input_path.stat().st_size if input_path.exists() else 0
+
+    print()
+    print("=" * 70)
+    print(f"[{i}/{n}] {input_path.name}")
+    print("=" * 70)
+
+    rc, summary, err = generate_bat(compress_py, merged)
+    if rc != 0:
+        print(f"[{i}/{n}] FAILED to generate bat:\n{err}")
+        return "failed-gen", _placeholder_row(input_path, in_bytes,
+                                              merged, "failed-gen")
+    if summary is None:
+        print(f"[{i}/{n}] FAILED to parse compress.py output: {err}")
+        return "failed-parse", _placeholder_row(input_path, in_bytes,
+                                                 merged, "failed-parse")
+
+    rc, elapsed = run_bat(summary["bat_path"])
+    status = status_for_exit(rc)
+    print(f"[{i}/{n}] -> {status}  ({elapsed:.0f}s)")
+
+    from .job_schema import derive_output_path
+    out_path = derive_output_path(input_path)
+    row = build_job_row(
+        input_path=input_path, out_path=out_path,
+        in_bytes=in_bytes, merged=merged,
+        status=status, elapsed=elapsed, summary=summary,
+    )
+    return status, row

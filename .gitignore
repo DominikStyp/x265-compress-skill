@@ -1,0 +1,67 @@
+# Python bytecode + caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Encoder-generated artifacts (per-source state — never belongs in VCS)
+.tmp/
+.compress_*/
+encoding_history.jsonl
+*.preflight.json
+*.quality.json
+*.report.md
+report_*.md
+*_report.md
+
+# Generated .bat files (specific to a particular source video / filesystem)
+compress_*.bat
+run_queue.bat
+
+# Video files (the encoder's input/output — must never be committed)
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.m4v
+*.webm
+*.ts
+
+# Encoder workdir chunks (paranoia — these live under .tmp/.compress_* but
+# block them by name too in case anyone moves them)
+src_*.mkv
+enc_*.mkv
+enc_*.part.mkv
+*.broken-*.mkv
+*.stale-pre-encode-*.mkv
+*.autofix-*.mkv
+*.preretry-aside-*.mkv
+needs_fix.json
+enc_*.needs_fix.json
+damaged_*
+
+# Queue files (contain user-specific paths + may be sensitive)
+queue.json
+queue_*.json

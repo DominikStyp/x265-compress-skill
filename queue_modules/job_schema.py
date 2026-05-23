@@ -1,0 +1,137 @@
+"""Job schema: which keys a queue.json job may contain, how to merge it with
+defaults, how to translate it into compress.py argv, and how to expand
+input globs into one job per matching file.
+
+Adding a new compress.py flag to the queue surface = add a line to
+VALID_KEYS and one to build_compress_argv. That's the whole change.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+
+# Snake-case keys a queue job dict may contain. Maps 1:1 to compress.py CLI
+# flags (kebab-cased). Unknown keys are warned about + dropped — typo
+# safety net.
+VALID_KEYS: set[str] = {
+    "input",
+    "crf",
+    "preset",
+    "segments",
+    "segment_seconds",
+    "parallel",
+    "max_size_percent",
+    "anime",
+    "grain",
+    "eight_bit",
+    "resumable",
+    "auto_fix_choke",
+    "no_pre_flight_scan",
+    "auto_patch_source",
+    "max_patch_seconds",
+}
+
+
+def merge_job(defaults: dict, job: dict) -> dict:
+    """defaults <- overridden by job. Unknown keys are dropped with a
+    warning so a typo in queue.json doesn't silently get ignored."""
+    merged: dict = {}
+    merged.update(defaults)
+    merged.update(job)
+    unknown = set(merged) - VALID_KEYS
+    for k in sorted(unknown):
+        print(f"WARNING: unknown queue key ignored: {k!r}", file=sys.stderr)
+    return {k: v for k, v in merged.items() if k in VALID_KEYS}
+
+
+def build_compress_argv(job: dict) -> list[str]:
+    """Translate a merged job dict to compress.py argv. Each flag is only
+    emitted when the corresponding key is present in `job` — a missing key
+    means "use compress.py's default", not "explicit absent value"."""
+    argv: list[str] = [str(Path(job["input"]).resolve())]
+
+    if "crf" in job:
+        argv += ["--crf", str(int(job["crf"]))]
+    if "preset" in job:
+        argv += ["--preset", str(job["preset"])]
+    if "segments" in job:
+        argv += ["--segments", str(int(job["segments"]))]
+    if "segment_seconds" in job:
+        argv += ["--segment-seconds", str(int(job["segment_seconds"]))]
+    if "parallel" in job:
+        # Accept either an integer or the string "auto" — compress.py
+        # derives the int from probed source height for 'auto'.
+        v = job["parallel"]
+        if isinstance(v, str) and v.lower() == "auto":
+            argv += ["--parallel", "auto"]
+        else:
+            argv += ["--parallel", str(int(v))]
+    if "max_size_percent" in job:
+        argv += ["--max-size-percent", str(float(job["max_size_percent"]))]
+    if job.get("anime"):
+        argv += ["--anime"]
+    if job.get("grain"):
+        argv += ["--grain"]
+    if job.get("eight_bit"):
+        argv += ["--eight-bit"]
+    if job.get("auto_fix_choke"):
+        argv += ["--auto-fix-choke"]
+    if job.get("no_pre_flight_scan"):
+        argv += ["--no-pre-flight-scan"]
+    if job.get("auto_patch_source"):
+        argv += ["--auto-patch-source"]
+    if job.get("max_patch_seconds") is not None:
+        argv += ["--max-patch-seconds", str(job["max_patch_seconds"])]
+    # In queue mode the default is resumable=true (kills survive, partial
+    # work is preserved). Set "resumable": false in JSON to opt out.
+    if job.get("resumable", True):
+        argv += ["--resumable"]
+
+    return argv
+
+
+def derive_output_path(input_path: Path) -> Path:
+    """Same rule as compress.py: same dir, same basename, .mkv ext. If
+    source is already .mkv, suffix with .x265 to avoid overwrite."""
+    base = input_path.stem
+    if input_path.suffix.lower() == ".mkv":
+        return input_path.parent / f"{base}.x265.mkv"
+    return input_path.parent / f"{base}.mkv"
+
+
+def expand_jobs(jobs: list[dict], queue_dir: Path) -> list[dict]:
+    """Resolve relative `input` paths against queue_dir; expand */?/[ globs
+    into one job per matching file (other keys inherited verbatim).
+
+    Literal-first rule: a filename containing `[ext.to]` would otherwise
+    be interpreted as a glob character class and silently match nothing.
+    We resolve as a literal path first and only fall back to glob expansion
+    if the literal doesn't exist on disk."""
+    out: list[dict] = []
+    for raw in jobs:
+        if "input" not in raw:
+            print("WARNING: job has no 'input' key, skipped:", raw,
+                  file=sys.stderr)
+            continue
+        pattern = str(raw["input"])
+        literal = Path(pattern) if Path(pattern).is_absolute() else queue_dir / pattern
+        if literal.exists():
+            out.append({**raw, "input": str(literal.resolve())})
+            continue
+        if any(ch in pattern for ch in "*?["):
+            p = Path(pattern)
+            matches = (sorted(p.parent.glob(p.name)) if p.is_absolute()
+                       else sorted(queue_dir.glob(pattern)))
+            if not matches:
+                print(f"WARNING: glob matched nothing: {pattern}",
+                      file=sys.stderr)
+                continue
+            for m in matches:
+                out.append({**raw, "input": str(m.resolve())})
+        else:
+            # No glob chars and literal doesn't exist — pass through anyway
+            # so the downstream "skipped-not-found" row appears in the
+            # report. Without this, the queue silently swallows typos.
+            out.append({**raw, "input": str(literal.resolve())})
+    return out
