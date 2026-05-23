@@ -14,11 +14,14 @@ you press matches the on-screen label):
     r / R     resume every paused slot
     ? / h     print the key list as an event in the live log
 
-Arrow keys come in three forms; we handle all of them:
+Arrow keys come in four forms; we handle all of them:
   • Legacy Windows conhost: 0xE0 (or 0x00) followed by `H` / `P` / `K` / `M`.
-  • ConPTY / Windows Terminal: VT escape sequence ESC `[` `A`/`B`/`C`/`D`.
-  • POSIX terminals (Terminal.app, iTerm2, xterm, etc.): same VT sequence
-    as ConPTY — ESC `[` `A`/`B`/`C`/`D`. No special case needed.
+  • ConPTY / Windows Terminal / Linux xterm / gnome-terminal / Terminal.app
+    / iTerm2 (default cursor-key mode): ESC `[` `A`/`B`/`C`/`D`.
+  • tmux / screen / xterm in application-keypad mode (SS3 prefix):
+    ESC `O` `A`/`B`/`C`/`D`. Without this branch arrow keys would silently
+    do nothing under tmux/screen — the most common SSH workflow on
+    macOS/Linux.
 
 Every handled key sets display.input_event so the render thread redraws
 immediately instead of waiting for its next 500 ms tick.
@@ -67,11 +70,14 @@ def keyboard_listener(display, stop_event: threading.Event) -> None:
                 display.move_focus(1); signal()
             continue
 
-        # ConPTY / POSIX terminals: arrow keys as ESC [ A/B/C/D.
+        # ESC-prefixed sequences: arrow keys as ESC [ A/B (default mode) or
+        # ESC O A/B (application-keypad mode used by tmux/screen, sometimes
+        # xterm). Handle both — without ESC O, tmux/screen users on
+        # macOS/Linux can't navigate slots.
         if ch == b"\x1b":
             ch2 = _read_byte_within(0.02)
-            if ch2 != b"[":
-                # Plain Esc or an unrecognised sequence — eat one more byte
+            if ch2 not in (b"[", b"O"):
+                # Plain Esc or an unrecognised prefix — eat one more byte
                 # if present to keep the queue clean, then ignore.
                 if ch2 is None:
                     continue
