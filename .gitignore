@@ -18,6 +18,9 @@ ENV/
 # Per-install commit-SHA stamp (written by install.sh / install.ps1)
 version.txt
 
+# Temp release-notes scratch file used by release.sh — deleted on success
+.release-notes-v*.md
+
 # Editor / IDE
 .vscode/
 .idea/
