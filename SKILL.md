@@ -5,14 +5,95 @@ description: Use whenever the user wants to compress, shrink, re-encode, or tran
 
 # ffmpeg-compress-video
 
-Generate a one-shot `.bat` that compresses a single video with x265 (CPU), tuned for sharpness and motion, with no audio re-encoding. **All decision logic lives in the bundled `compress.py`** — this skill exists to invoke it, interpret its output, and let Claude tweak the `.bat` afterwards for unusual sources.
+Generate a one-shot script (`.bat` on Windows, `.sh` on macOS/Linux) that compresses a video with x265 (CPU), tuned for sharpness and motion, with no audio re-encoding. **All decision logic lives in the bundled `compress.py`** — this skill exists to invoke it, interpret its output, and let Claude tweak the script afterwards for unusual sources.
+
+OS-specific behaviour (priority class, suspend syscall, script extension, shell to run) is auto-detected at import time by `platform_compat/`. The agent doesn't need to know which OS it's on.
+
+## Agent playbook — single prompt to queue running
+
+Use this decision tree when the user invokes the skill. Detailed schemas and edge cases are linked.
+
+### 1. The user has ONE video → single-file mode
+
+```
+python compress.py "<full path to source>" [--crf N] [--preset name] [--anime] [--grain]
+```
+
+Read the JSON the script prints. Report to the user, in short prose:
+- the chosen CRF + preset and why (cite source codec + bits-per-pixel),
+- the expected size reduction range,
+- the path to the generated `.bat` / `.sh`,
+- any `warnings` from the JSON, verbatim.
+
+Then stop. **Do not run the script yourself** — the encode can take hours; the user runs it manually.
+
+### 2. The user has MULTIPLE videos (a folder, a list, a glob) → queue mode
+
+a. Decide the queue file's location: **the directory the videos live in**, not this repo. Name it `queue.json`.
+
+b. Write `queue.json` with reasonable defaults. The minimal "compress everything in this folder" template:
+
+```json
+{
+  "defaults": {
+    "crf": 22,
+    "parallel": "auto",
+    "max_size_percent": 80,
+    "auto_patch_source": true,
+    "auto_fix_choke": true,
+    "resumable": true
+  },
+  "jobs": [
+    {"input": "*.mp4"},
+    {"input": "*.mkv"}
+  ]
+}
+```
+
+c. Run it:
+```
+python3 run_queue.py /path/to/queue.json
+```
+(Use `python` on Windows.)
+
+d. Read the exit code + the markdown report it writes to `<videos>/.tmp/report_<timestamp>.md`. Report results to the user.
+
+See [`docs/AGENT_QUEUE_RECIPES.md`](docs/AGENT_QUEUE_RECIPES.md) for paste-ready recipes (anime, grain, mobile-compat, archival, etc.) and the full per-job key schema + exit-code mapping.
+
+### 3. Interpreting the user's wording
+
+| User says... | Tweak |
+|---|---|
+| "smaller, quality matters less" | `crf` +2 above auto |
+| "visually lossless" / "archival quality" | `crf: 17`, `preset: "slower"` |
+| "anime" / "cartoon" / "line-art" | `anime: true` |
+| "preserve grain" / "film look" | `grain: true` |
+| "play on my old TV / phone" | `eight_bit: true` |
+| "save power, file is for playback" | mention NVENC (`-c:v hevc_nvenc -preset p7 -rc vbr -cq 24`) as an alternative; this skill still defaults to libx265 |
+| "resume" / "continue" | just re-run the same `.bat`/`.sh` or `queue.json` — resumable picks up automatically |
+
+### 4. After the encode runs
+
+The user (or `run_queue.py`) writes a markdown report under `<videos>/.tmp/`:
+- `report_<YYYY-MM-DD_HH-MM-SS>.md` — only this run (one file per invocation)
+- `<queue_stem>_report.md` — incremental, accumulates jobs across every run
+
+VMAF/PSNR/SSIM scores land in those reports. If a row shows `vmaf_mean < 90`, something went wrong — see the "fps-mismatch gotcha" section below.
+
+If any job exits `pre-flight-failed` (code 6), `awaiting-chunk-fix` (code 7), or `failed-exit-4` (verify), follow [Manual recovery recipes](#manual-recovery-recipes).
 
 ## Action
 
 Run the bundled script with the source video as the argument:
 
 ```powershell
+# Windows
 python "$env:USERPROFILE\.claude\skills\ffmpeg-compress-video\compress.py" "<full path to source video>"
+```
+
+```bash
+# macOS / Linux
+python3 "$HOME/.claude/skills/ffmpeg-compress-video/compress.py" "<full path to source video>"
 ```
 
 The script:

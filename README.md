@@ -33,6 +33,36 @@ scripts run standalone from any shell.
 - Python 3.9+ (standard library only — no `pip install` step)
 - `ffmpeg` and `ffprobe` on PATH (and `python3` on PATH on POSIX)
 
+## Installing as a Claude Code skill
+
+Clone into your local skills directory so Claude Code auto-discovers it
+via the `name:` / `description:` frontmatter in `SKILL.md`:
+
+```bash
+# macOS / Linux
+mkdir -p ~/.claude/skills
+git clone git@github.com:DominikStyp/x265-compress-skill.git \
+  ~/.claude/skills/ffmpeg-compress-video
+```
+
+```powershell
+# Windows
+mkdir "$env:USERPROFILE\.claude\skills" -Force
+git clone git@github.com:DominikStyp/x265-compress-skill.git `
+  "$env:USERPROFILE\.claude\skills\ffmpeg-compress-video"
+```
+
+Restart Claude Code (or run `/skills` to refresh). After install, the skill
+activates automatically on prompts like *"compress this video"*,
+*"shrink this mp4"*, *"transcode to mkv"*. See
+[`SKILL.md`](SKILL.md#agent-playbook--single-prompt-to-queue-running) for
+the agent decision tree and
+[`docs/AGENT_QUEUE_RECIPES.md`](docs/AGENT_QUEUE_RECIPES.md) for
+paste-ready `queue.json` templates.
+
+Standalone use (no Claude Code) is also fine — clone anywhere, run the
+scripts directly.
+
 ## Quick start
 
 Single file (Windows):
@@ -75,12 +105,16 @@ Minimal `queue.json`:
 
 ## Documentation
 
-[**SKILL.md**](SKILL.md) is the comprehensive reference — every flag,
-every recovery path, the x265 parameter rationale, queue schema details,
-quality-measurement modes, and operational notes.
-
-[**references/x265-tuning.md**](references/x265-tuning.md) explains the
-sharpness/motion-tuned x265 parameter set the skill applies by default.
+- [**SKILL.md**](SKILL.md) — comprehensive reference: every flag, every
+  recovery path, queue schema, quality-measurement modes, operational
+  notes. Starts with an **Agent playbook** for AI agents picking up the
+  skill.
+- [**docs/AGENT_QUEUE_RECIPES.md**](docs/AGENT_QUEUE_RECIPES.md) —
+  paste-ready `queue.json` templates for the common single-prompt
+  scenarios (anime, grain, mobile-compat, archival, etc.) + the full
+  per-job key schema + exit-code mapping.
+- [**references/x265-tuning.md**](references/x265-tuning.md) — the
+  sharpness/motion-tuned x265 parameter set the skill applies by default.
 
 ## Layout
 
