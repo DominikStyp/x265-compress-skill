@@ -204,3 +204,13 @@ or per-job (overrides the default for that one):
 | other | `failed-exit-N` | Genuine error. See logs |
 
 The queue runner keeps going past `stopped-threshold` and most failures by default. Pass `--stop-on-failure` to bail on the first real failure.
+
+**`run_queue.py` aggregate exit code** (distinct from the per-job codes above):
+
+| Exit | Meaning |
+|---|---|
+| 0 | Every job clean (`ok` / `skipped-exists`) |
+| 1 | At least one real failure (`failed-gen` / `failed-parse` / `failed-exit-N`) |
+| 2 | No hard failure, but a job needs attention (`stopped-threshold`, `awaiting-chunk-fix`, `skipped-not-found`, `pre-flight-failed`, `chunk-choked`) |
+
+A hard failure (1) outranks needs-attention (2). Add `--json-status <path>` to also append one NDJSON record per job (`{input, status, output, input_bytes, output_bytes, elapsed_seconds, vmaf_mean}`) — machine-readable for fleet monitoring, while stdout stays human-readable. `tail -f` it to watch a run live.
