@@ -16,6 +16,9 @@ scripts run standalone from any shell.
 - **Finish after current chunk** — press `f` (or drop a `FINISH` file, for
   headless) to stop gracefully once in-flight chunks complete; halts the queue,
   fully resumable
+- **Chunk-finished hook** — run a command after each chunk (e.g. a Pusher /
+  webhook progress ping); set per file or in the queue `defaults`, context via
+  `X265_*` env vars, best-effort so it never derails the encode
 - **Source corruption guard** — pre-flight bitstream scan plus an opt-in
   surgical patch that re-encodes JUST the broken h264 GOPs
 - **Choke detection** — per-chunk progress watchdog frees a stuck slot

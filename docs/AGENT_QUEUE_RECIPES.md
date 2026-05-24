@@ -167,6 +167,38 @@ drop because grain costs bits.
 
 ---
 
+## Recipe 8 — "Notify me as each chunk finishes (Pusher / webhook)"
+
+`on_chunk_done` runs a command after every chunk (success *and* failure). It's an
+argv list; chunk context arrives via `X265_*` env vars, so the script takes no
+arguments. Best-effort — a slow or failing hook never stalls or aborts the encode.
+
+```json
+{
+  "defaults": {
+    "crf": 22,
+    "parallel": "auto",
+    "resumable": true,
+    "on_chunk_done": ["bash", "/home/me/notify.sh"]
+  },
+  "jobs": [
+    {"input": "*.mkv"}
+  ]
+}
+```
+
+`/home/me/notify.sh`:
+
+```bash
+#!/usr/bin/env bash
+curl -fsS -X POST https://api.example/notify \
+  -d "text=${X265_CHUNK_INDEX}/${X265_CHUNK_TOTAL} ${X265_CHUNK_STATUS}: $(basename "$X265_SOURCE")"
+```
+
+Windows: use `["pwsh","-File","C:/tools/notify.ps1"]` and read `$env:X265_CHUNK_INDEX`, etc.
+
+---
+
 ## Per-job keys (full schema)
 
 Any key in this table can appear in `defaults` (applies to all jobs)
@@ -189,6 +221,7 @@ or per-job (overrides the default for that one):
 | `no_pre_flight_scan` | bool | Skip the source-corruption pre-scan |
 | `auto_patch_source` | bool | Surgically patch broken h264 GOPs and continue |
 | `max_patch_seconds` | float | Loss budget for auto-patch (default 10) |
+| `on_chunk_done` | argv list / str | Command run after each chunk (success+failure); context via `X265_*` env vars. Best-effort, 30 s timeout — never derails the encode |
 
 ---
 

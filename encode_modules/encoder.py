@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .chunk_hook import ChunkHook
 from .encode_parallel import encode_chunks_parallel
 from .encode_serial import encode_chunks_serial
 
@@ -29,7 +30,8 @@ def encode_chunks(chunks: list[Path], workdir: Path, *, parallel: int,
                  choke_threshold_speed: float = 0.05,
                  choke_grace_seconds: float = 300.0,
                  auto_fix_choke: bool = False,
-                 segment_seconds: int = 60) -> list[dict]:
+                 segment_seconds: int = 60,
+                 chunk_hook: ChunkHook | None = None) -> list[dict]:
     """Top-level dispatcher — routes to the encoder that owns the guards
     we need. Returns the list of skipped chunks (empty if all chunks
     encoded cleanly). The serial path can't produce skips (no choke
@@ -41,7 +43,8 @@ def encode_chunks(chunks: list[Path], workdir: Path, *, parallel: int,
     if parallel <= 1 and not needs_parallel_path:
         encode_chunks_serial(chunks, workdir,
                             crf=crf, preset=preset,
-                            pix_fmt=pix_fmt, x265_params=x265_params)
+                            pix_fmt=pix_fmt, x265_params=x265_params,
+                            chunk_hook=chunk_hook)
         return []
     return encode_chunks_parallel(
         chunks, workdir, parallel=max(1, parallel),
@@ -54,4 +57,5 @@ def encode_chunks(chunks: list[Path], workdir: Path, *, parallel: int,
         choke_grace_seconds=choke_grace_seconds,
         auto_fix_choke=auto_fix_choke,
         segment_seconds=segment_seconds,
+        chunk_hook=chunk_hook,
     )

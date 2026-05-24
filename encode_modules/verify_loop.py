@@ -20,6 +20,7 @@ import sys
 import time
 from pathlib import Path
 
+from .chunk_hook import ChunkHook
 from .chunking import concat_chunks
 from .dts_recovery import attempt_dts_fix_remux, is_dts_only_verify_failure
 from .encoder import encode_chunks
@@ -51,7 +52,8 @@ def quarantine_chunk(chunk: Path) -> Path:
 def run_encode_verify_loop(src: Path, chunks: list[Path], workdir: Path,
                           dst: Path, *, args: argparse.Namespace,
                           total_dur: float, source_bytes: int,
-                          max_attempts: int) -> list[str]:
+                          max_attempts: int,
+                          chunk_hook: ChunkHook | None = None) -> list[str]:
     """encode → concat → verify, with bounded retry on missing/bad chunks.
 
     Returns the list of remaining verify problems (empty = success). When
@@ -80,6 +82,7 @@ def run_encode_verify_loop(src: Path, chunks: list[Path], workdir: Path,
             choke_grace_seconds=args.choke_grace_seconds,
             auto_fix_choke=args.auto_fix_choke,
             segment_seconds=args.segment_seconds,
+            chunk_hook=chunk_hook,
         )
 
         # Per-chunk choke skips: do NOT merge. Successful chunks stay on

@@ -3,6 +3,21 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.4.0] — 2026-05-24
+
+### Added
+- **`on_chunk_done` command hook** — run a command after each chunk finishes
+  (success *and* failure), e.g. to push a progress notification. Configure it in
+  a queue's `defaults` (every job), per job (one file), or on a single run via
+  `compress.py --on-chunk-done`. The command is an argv list (`shell=False`, no
+  injection) and receives context through `X265_*` environment variables
+  (`X265_CHUNK_INDEX`, `X265_CHUNK_TOTAL`, `X265_CHUNK_STATUS`,
+  `X265_CHUNK_OUTPUT`, `X265_SOURCE`, …). Best-effort: it runs with a 30 s
+  timeout and a missing/slow/failing hook is logged and ignored — it can never
+  derail or stall the encode. The hook command travels to the chunk encoder via
+  a JSON sidecar, so its quotes never get embedded into the generated `.bat`/`.sh`
+  (only the sidecar's path is, riding the existing safe path-stash pattern).
+
 ## [1.3.0] — 2026-05-24
 
 ### Added

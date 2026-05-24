@@ -26,7 +26,7 @@ where python >nul 2>nul || goto _NODEP_PYTHON
 set "_SKILL_IN={input_path}"
 set "_SKILL_OUT={output_path}"
 set "_SKILL_WORKER={resumable_script}"
-set "_SKILL_WORKDIR={workdir}"
+set "_SKILL_WORKDIR={workdir}"{hooks_setup}
 
 echo === ffmpeg x265 compression (resumable mode) ===
 echo Input:    "%_SKILL_IN%"
@@ -50,7 +50,7 @@ python -u "%_SKILL_WORKER%" ^
   --pix-fmt {pix_fmt_out} ^
   --x265-params "{x265_params}" ^
   --segment-seconds {segment_seconds} ^
-  --parallel {parallel}{extra_args}{no_report_flag}
+  --parallel {parallel}{extra_args}{no_report_flag}{hooks_flag}
 
 set ENCODE_RC=%errorlevel%
 echo.

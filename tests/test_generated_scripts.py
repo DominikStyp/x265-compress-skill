@@ -8,6 +8,7 @@ str.format brace mistake surfaces here too (a KeyError would fail the render).
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -16,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from compress_modules import script_writer  # noqa: E402
 from compress_modules.plan import EncodePlan  # noqa: E402
 from compress_modules.probe import SourceInfo  # noqa: E402
+from encode_modules.hook_config import load_hook_sidecar  # noqa: E402
 
 
 def _info() -> SourceInfo:
@@ -86,6 +88,69 @@ class ShDepGuardTest(unittest.TestCase):
                           resumable=True, no_pause=True)
         self.assertIn("read -n1", with_pause)
         self.assertNotIn("read -n1", without)
+
+
+def _render_hooked(fn, tmp_dir, on_chunk_done):
+    """Render the resumable script with a real tmp_dir so the hook sidecar can
+    actually be written, and an explicit on_chunk_done."""
+    return fn(
+        _info(), _plan(), Path("/tmp/in.mp4"), Path("/skill"),
+        Path(tmp_dir), Path(tmp_dir) / "out.report.md",
+        resumable=True, segment_seconds=60, parallel=2,
+        max_output_bytes=None, max_size_percent=None, auto_fix_choke=False,
+        no_pre_flight_scan=False, auto_patch_source=False,
+        max_patch_seconds=10.0, no_report=False, no_pause=False,
+        on_chunk_done=on_chunk_done,
+    )
+
+
+class HookFragmentTest(unittest.TestCase):
+    """on_chunk_done: the generated script must carry only the sidecar PATH
+    (via the proven stash var), never the quote-bearing argv inline — and the
+    sidecar file must hold the real command."""
+
+    def test_win_resumable_stashes_sidecar_path_and_passes_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            s = _render_hooked(script_writer._render_windows_script, td,
+                               ["bash", "/x/n.sh"])
+            self.assertIn('set "_SKILL_HOOKS=', s)
+            self.assertIn('--hooks-config "%_SKILL_HOOKS%"', s)
+            # The argv (with its quotes) never appears inline in the script.
+            self.assertNotIn('["bash"', s)
+            self.assertEqual(load_hook_sidecar(Path(td) / "in.hooks.json"),
+                             ["bash", "/x/n.sh"])
+
+    def test_posix_resumable_stashes_sidecar_path_and_passes_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            s = _render_hooked(script_writer._render_posix_script, td,
+                               ["bash", "/x/n.sh"])
+            self.assertIn("_SKILL_HOOKS=", s)
+            self.assertIn('--hooks-config "${_SKILL_HOOKS}"', s)
+            self.assertNotIn('["bash"', s)  # argv never inline (sidecar only)
+            self.assertEqual(load_hook_sidecar(Path(td) / "in.hooks.json"),
+                             ["bash", "/x/n.sh"])
+
+    def test_brace_in_path_does_not_break_format(self) -> None:
+        # The sidecar path is inserted as a .format() VALUE, never re-formatted,
+        # so a literal { / } in the path must NOT raise KeyError at render time.
+        with tempfile.TemporaryDirectory() as td:
+            braced = Path(td) / "te{st}dir"
+            braced.mkdir()
+            for fn in (script_writer._render_windows_script,
+                       script_writer._render_posix_script):
+                s = _render_hooked(fn, braced, ["bash", "/x/n.sh"])
+                self.assertIn("--hooks-config", s)
+            self.assertEqual(load_hook_sidecar(braced / "in.hooks.json"),
+                             ["bash", "/x/n.sh"])
+
+    def test_no_hook_means_no_fragment_and_no_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            for fn in (script_writer._render_windows_script,
+                       script_writer._render_posix_script):
+                s = _render_hooked(fn, td, None)
+                self.assertNotIn("_SKILL_HOOKS", s)
+                self.assertNotIn("--hooks-config", s)
+            self.assertFalse((Path(td) / "in.hooks.json").exists())
 
 
 if __name__ == "__main__":

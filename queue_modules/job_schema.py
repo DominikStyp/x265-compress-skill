@@ -7,6 +7,7 @@ VALID_KEYS and one to build_compress_argv. That's the whole change.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -30,6 +31,7 @@ VALID_KEYS: set[str] = {
     "no_pre_flight_scan",
     "auto_patch_source",
     "max_patch_seconds",
+    "on_chunk_done",
 }
 
 
@@ -83,6 +85,15 @@ def build_compress_argv(job: dict) -> list[str]:
         argv += ["--auto-patch-source"]
     if job.get("max_patch_seconds") is not None:
         argv += ["--max-patch-seconds", str(job["max_patch_seconds"])]
+    cmd = job.get("on_chunk_done")
+    if cmd:
+        # Travels as one JSON-array argv element over the (shell-free)
+        # queue->compress.py subprocess boundary; compress.py's parse_hook_spec
+        # reads it back. A bare string is wrapped so both queue spellings land
+        # identically. A FALSY value (null / [] / "") is the supported way to
+        # disable an inherited `defaults` hook for one job — emit no flag.
+        argv += ["--on-chunk-done",
+                 json.dumps(cmd if isinstance(cmd, list) else [cmd])]
     # In queue mode the default is resumable=true (kills survive, partial
     # work is preserved). Set "resumable": false in JSON to opt out.
     if job.get("resumable", True):

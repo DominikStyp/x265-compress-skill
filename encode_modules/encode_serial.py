@@ -20,6 +20,7 @@ from platform_compat import (
     wrap_cmd_for_low_priority,
 )
 
+from .chunk_hook import ChunkHook, fire_for_chunk
 from .chunking import ffmpeg_chunk_cmd, reorder_middle_first
 from .finish_signal import FINISH_FILENAME, FinishSignal
 from .history_state import mark_status, record_chunk_elapsed
@@ -29,7 +30,8 @@ from .probes import fmt_dur, probe_duration
 
 def encode_chunks_serial(chunks: list[Path], workdir: Path, *,
                         crf: int, preset: str, pix_fmt: str,
-                        x265_params: str) -> None:
+                        x265_params: str,
+                        chunk_hook: ChunkHook | None = None) -> None:
     """One chunk at a time, with the standalone progress.py percentage bar.
 
     Chunks already on disk as enc_*.mkv are skipped (resumability). Encode
@@ -105,9 +107,16 @@ def encode_chunks_serial(chunks: list[Path], workdir: Path, *,
         if rc != 0:
             if part.exists():
                 part.unlink()
+            # Fire the failure hook before exiting (enc_*.mkv absent -> status
+            # "failed"), so an alerting hook learns about the failed chunk too.
+            fire_for_chunk(chunk_hook, chunk=chunk, workdir=workdir,
+                           position_of=pos_of, elapsed=chunk_elapsed,
+                           log=print)
             sys.exit(f"ERROR: encode failed on {chunk.name} (exit {rc}). "
                      "Re-run to resume from this chunk.")
         part.rename(out)
         # Mirror the parallel encoder's history hook so the JSONL log
         # carries per-chunk wall times regardless of encoder path.
         record_chunk_elapsed(chunk.name, chunk_elapsed)
+        fire_for_chunk(chunk_hook, chunk=chunk, workdir=workdir,
+                       position_of=pos_of, elapsed=chunk_elapsed, log=print)

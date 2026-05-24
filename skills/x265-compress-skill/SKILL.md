@@ -437,8 +437,54 @@ Object with `defaults` (recommended — set things once, override per file):
 | `grain` | `--grain` | bool |
 | `eight_bit` | `--eight-bit` | bool |
 | `resumable` | `--resumable` | bool, **default `true` in queue mode** |
+| `on_chunk_done` | `--on-chunk-done` | argv list (or bare string) run after each chunk — see **Chunk-finished hook** below |
 
 Unknown keys produce a warning and are dropped — gives you a typo safety net.
+
+### Chunk-finished hook (`on_chunk_done`)
+
+Run a command after **each chunk finishes** (success *and* failure) — e.g. to push a progress notification. Set it in a queue's `defaults` (applies to every job) or per job (one file), or on a single run with `compress.py --on-chunk-done`. Requires `--resumable` (it's a property of the chunked encoder).
+
+The command is an **argv list** (recommended — you name the interpreter, and there's no shell quoting to get wrong):
+
+```json
+{
+  "defaults": {
+    "parallel": 4,
+    "on_chunk_done": ["bash", "/home/me/notify-pusher.sh"]
+  },
+  "jobs": [
+    {"input": "clip1.mp4"},
+    {"input": "clip2.mp4", "on_chunk_done": ["pwsh", "-File", "C:/tools/notify.ps1"]}
+  ]
+}
+```
+
+A bare string (`"on_chunk_done": "/home/me/notify.sh"`) is accepted as a 1-element command. On Windows point it at a `.bat`/`.cmd`/`.exe` or name the interpreter (`["pwsh","-File","x.ps1"]`); on POSIX a shell script needs its `#!` + exec bit, or use `["bash","x.sh"]`.
+
+**Context is passed via environment variables** (not arguments — so paths with spaces never break the command):
+
+| Variable | Example | Meaning |
+|---|---|---|
+| `X265_HOOK_EVENT` | `chunk-done` | the event (currently always this) |
+| `X265_CHUNK_STATUS` | `ok` / `failed` | did this chunk produce its encoded output? |
+| `X265_SOURCE` | `/videos/a.mp4` | the source file being encoded |
+| `X265_WORKDIR` | `…/.tmp/.compress_a` | per-encode working dir |
+| `X265_CHUNK_NAME` | `src_0003.mkv` | the chunk that finished |
+| `X265_CHUNK_INDEX` | `3` | 1-based chunk position |
+| `X265_CHUNK_TOTAL` | `12` | total chunks for this file |
+| `X265_CHUNK_OUTPUT` | `…/enc_src_0003.mkv` | encoded chunk path (empty when `failed`) |
+| `X265_CHUNK_ELAPSED_SEC` | `84.21` | wall-clock seconds for that chunk |
+
+A minimal POSIX notifier:
+
+```bash
+#!/usr/bin/env bash
+curl -fsS -X POST https://example.test/notify \
+  -d "msg=chunk ${X265_CHUNK_INDEX}/${X265_CHUNK_TOTAL} ${X265_CHUNK_STATUS} for $(basename "$X265_SOURCE")"
+```
+
+**Best-effort — it never derails the encode.** The hook runs with a 30 s timeout; a missing command, a non-zero exit, or a timeout is logged and ignored. Already-encoded chunks are skipped on a resumed run (so they don't re-fire); a retried failed chunk fires again.
 
 ### Launcher (`run_queue.bat`)
 

@@ -44,7 +44,7 @@ fi
 _SKILL_IN={input_path}
 _SKILL_OUT={output_path}
 _SKILL_WORKER={resumable_script}
-_SKILL_WORKDIR={workdir}
+_SKILL_WORKDIR={workdir}{hooks_setup}
 
 # Terminal title (works in Terminal.app, iTerm2, gnome-terminal, etc.).
 printf '\\033]0;x265 compress (resumable): {base_title}\\007'
@@ -71,7 +71,7 @@ echo ""
   --pix-fmt {pix_fmt_out} \\
   --x265-params "{x265_params}" \\
   --segment-seconds {segment_seconds} \\
-  --parallel {parallel}{extra_args}{no_report_flag}
+  --parallel {parallel}{extra_args}{no_report_flag}{hooks_flag}
 
 ENCODE_RC=$?
 echo ""

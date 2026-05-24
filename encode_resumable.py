@@ -26,9 +26,11 @@ import sys
 import time
 from pathlib import Path
 
+from encode_modules.chunk_hook import ChunkHook
 from encode_modules.chunking import cleanup, reorder_middle_first, split_source
 from encode_modules.cli_args import parse_args
 from encode_modules.finish_signal import FINISH_FILENAME
+from encode_modules.hook_config import load_hook_sidecar
 from encode_modules.history_state import (
     finalize_history_state,
     init_history_state,
@@ -132,6 +134,22 @@ def main() -> int:
     chunks = split_source(src, workdir, args.segment_seconds)
     print(f"      To stop after the current chunk (resumable): press 'f' in "
           f"the live display, or create {workdir / FINISH_FILENAME}")
+
+    # Build the on_chunk_done hook from the sidecar compress.py wrote (if any).
+    # An unreadable sidecar degrades to "no hook" — an auxiliary notification
+    # must never abort the encode.
+    hook_command = None
+    if args.hooks_config:
+        hook_command = load_hook_sidecar(Path(args.hooks_config))
+        if hook_command is None:
+            print(f"      WARNING: on_chunk_done hook config unreadable "
+                  f"({args.hooks_config}); continuing without it.",
+                  file=sys.stderr)
+    chunk_hook = ChunkHook(hook_command, source=src, workdir=workdir,
+                           total=len(chunks))
+    if chunk_hook.enabled:
+        print(f"      on_chunk_done hook: {hook_command}")
+
     total_dur = (args.total_duration_seconds
                  if args.total_duration_seconds is not None
                  else sum(probe_duration(c) for c in chunks))
@@ -144,6 +162,7 @@ def main() -> int:
         src, chunks, workdir, dst,
         args=args, total_dur=total_dur, source_bytes=source_bytes,
         max_attempts=MAX_VERIFY_ATTEMPTS,
+        chunk_hook=chunk_hook,
     )
     if problems:
         mark_status("verify-failed", verify_problems=problems)

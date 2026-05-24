@@ -30,6 +30,7 @@ from pathlib import Path
 from compress_modules.plan import pick_parallel, plan_encode
 from compress_modules.probe import analyse
 from compress_modules.script_writer import write_script
+from encode_modules.hook_config import parse_hook_spec
 from platform_compat import enable_utf8_io
 
 
@@ -79,6 +80,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                          "GOPs via ffmpeg error concealment). Requires --resumable.")
     ap.add_argument("--max-patch-seconds", type=float, default=10.0,
                     help="Loss budget for --auto-patch-source (default 10s).")
+    ap.add_argument("--on-chunk-done", default=None, metavar="CMD",
+                    help="With --resumable, run CMD after each chunk finishes "
+                         "(success or failure). CMD is a JSON array argv list "
+                         "(e.g. '[\"bash\",\"/path/notify.sh\"]') or a bare "
+                         "command token. Context is passed via X265_* env vars "
+                         "(X265_CHUNK_INDEX, X265_CHUNK_TOTAL, X265_CHUNK_STATUS, "
+                         "X265_CHUNK_OUTPUT, X265_SOURCE, ...). Best-effort: a "
+                         "slow/failing hook never aborts the encode.")
     ap.add_argument("--no-report", action="store_true",
                     help="Don't write a per-file markdown report. Set by "
                          "run_queue.py because it writes an aggregate report.")
@@ -177,6 +186,20 @@ def main() -> int:
         if archival_warning:
             print(archival_warning, file=sys.stderr)
 
+    # Parse the chunk hook up front so a malformed command fails loud HERE,
+    # before any script is written or any encode starts. It only applies to
+    # the chunked encoder, so warn + drop it for a non-resumable run.
+    hook_command = None
+    if args.on_chunk_done:
+        try:
+            hook_command = parse_hook_spec(args.on_chunk_done)
+        except ValueError as e:
+            sys.exit(f"ERROR: --on-chunk-done: {e}")
+        if not args.resumable:
+            print("WARNING: --on-chunk-done ignored without --resumable "
+                  "(chunk hooks require the chunked encoder).", file=sys.stderr)
+            hook_command = None
+
     write_script(
         info, plan, source_path,
         resumable=args.resumable, segment_seconds=segment_seconds,
@@ -189,6 +212,7 @@ def main() -> int:
         max_patch_seconds=args.max_patch_seconds,
         no_report=args.no_report,
         no_pause=args.no_pause,
+        on_chunk_done=hook_command,
     )
 
     print(json.dumps({
@@ -212,6 +236,7 @@ def main() -> int:
         "segment_seconds_effective": segment_seconds,
         "max_size_percent": args.max_size_percent,
         "max_output_bytes": max_output_bytes,
+        "on_chunk_done": hook_command,
     }, indent=2, ensure_ascii=False))
     return 0
 

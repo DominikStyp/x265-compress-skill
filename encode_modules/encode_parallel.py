@@ -13,9 +13,10 @@ import os
 import queue
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from .chunk_hook import ChunkHook, fire_for_chunk
 from .chunk_recovery import try_auto_fix_chunk
 from .chunk_worker import _encode_one_chunk_with_display
 from .chunking import reorder_middle_first, x265_params_with_pools
@@ -47,6 +48,8 @@ class _WorkerContext:
     x265_params: str
     x265_params_for_autofix: str  # original (no pools= override) for relaxing
     auto_fix_choke: bool
+    chunk_hook: ChunkHook | None = None
+    position_of: dict[Path, int] = field(default_factory=dict)
 
 
 def _worker(slot: int, ctx: _WorkerContext) -> None:
@@ -73,6 +76,7 @@ def _attempt_chunk(slot: int, chunk: Path, ctx: _WorkerContext) -> None:
     retry. On unhandled exception, log + mark choked + push a synthetic
     result so the post-loop skip aggregation picks it up."""
     display = ctx.display
+    elapsed = 0.0
     try:
         r = _encode_one_chunk_with_display(
             slot, chunk, ctx.workdir, display,
@@ -83,14 +87,22 @@ def _attempt_chunk(slot: int, chunk: Path, ctx: _WorkerContext) -> None:
         with display.lock:
             chunk_was_choked = chunk.name in display.choked_chunks
 
-        if rc != 0 and chunk_was_choked and ctx.auto_fix_choke:
-            if _try_autofix(slot, chunk_path, ctx, elapsed):
-                return
+        if (rc != 0 and chunk_was_choked and ctx.auto_fix_choke
+                and _try_autofix(slot, chunk_path, ctx, elapsed)):
+            return
 
         with ctx.results_lock:
             ctx.results.append(r)
     except Exception as ex:
         _record_worker_exception(slot, chunk, ctx, ex)
+    finally:
+        # Fire on_chunk_done exactly once per attempt, from ground truth (does
+        # enc_<stem>.mkv exist?). In `finally` so it also covers the autofix-
+        # success early return and the exception path. fire is no-raise, so it
+        # can never turn a real chunk success into a worker-killing error.
+        fire_for_chunk(ctx.chunk_hook, chunk=chunk, workdir=ctx.workdir,
+                       position_of=ctx.position_of, elapsed=elapsed,
+                       log=display.events.put)
 
 
 def _try_autofix(slot: int, chunk_path: Path, ctx: _WorkerContext,
@@ -192,7 +204,8 @@ def encode_chunks_parallel(chunks: list[Path], workdir: Path, *,
                           choke_threshold_speed: float = 0.05,
                           choke_grace_seconds: float = 300.0,
                           auto_fix_choke: bool = False,
-                          segment_seconds: int = 60) -> list[dict]:
+                          segment_seconds: int = 60,
+                          chunk_hook: ChunkHook | None = None) -> list[dict]:
     """N concurrent ffmpegs encoding median-first chunks, with live render,
     threshold guard, choke detector, htop-style pause/resume. Returns the
     list of chunks that didn't produce a clean enc_*.mkv (empty = success).
@@ -243,6 +256,8 @@ def encode_chunks_parallel(chunks: list[Path], workdir: Path, *,
         x265_params=params_with_pools,
         x265_params_for_autofix=x265_params,
         auto_fix_choke=auto_fix_choke,
+        chunk_hook=chunk_hook,
+        position_of=pos_of,
     )
 
     stop_render = threading.Event()

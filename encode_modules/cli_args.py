@@ -48,6 +48,10 @@ def _add_pipeline_args(ap: argparse.ArgumentParser) -> None:
                     help="Skip writing the per-file markdown report. The "
                          "queue runner sets this because it writes an "
                          "aggregate report of its own.")
+    ap.add_argument("--hooks-config", default=None,
+                    help="Path to the JSON sidecar holding the on_chunk_done "
+                         "hook command (written by compress.py). Internal "
+                         "plumbing — users set --on-chunk-done on compress.py.")
 
 
 def _add_quality_args(ap: argparse.ArgumentParser) -> None:
