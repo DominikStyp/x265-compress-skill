@@ -18,6 +18,37 @@ cleverness — a bad encode can silently corrupt or delete a user's source video
 - Match the surrounding code: naming, type hints (`from __future__ import
   annotations`), comment density, and idioms already in the file.
 - Readability is a feature. If a reviewer needs the diff explained, simplify it.
+- **Stdlib only.** No third-party runtime *or* test dependencies — preserve the
+  "no `pip install`" promise. If you reach for a package, solve it with the
+  standard library instead.
+- **Comment the *why*, not the *what*,** for any safety/guard code. Match the
+  existing test docstrings (e.g. `tests/test_render_tick.py`) that explain *why*
+  a guard exists and what breaks without it.
+
+### Project invariants — do not regress these
+
+These encode hard-won correctness properties of a kill-survivable encoder that
+can otherwise corrupt or delete a user's source video. Treat them as
+non-negotiable; the reviewer subagents in rule 4 must check them.
+
+- **Data safety (the data-loss guard).** Never delete or overwrite a user's
+  source until the encoded output has passed verification. Destructive cleanup is
+  **quarantine-first** — move aside, don't `unlink`, the way `skipped_collector`
+  quarantines choked parts. When in doubt, keep the file.
+- **Subprocess discipline.** Build commands as argument **lists** — never
+  `shell=True`, never string-concatenated command lines (avoids cross-OS quoting
+  and injection bugs). Put a timeout on probe-style `subprocess.run` calls. Every
+  spawned ffmpeg must be terminated on abort/error so encoders are never leaked.
+- **Error handling.** Catch specific exceptions and fail loud and early. A broad
+  `except Exception` is allowed **only** at the daemon-thread guard seam, and it
+  must surface the error to the events queue — never silently swallow (see the
+  `_render_tick` pattern). No bare `except:`.
+- **Atomic writes & resumability.** Write every final artifact to a temp name and
+  atomically `os.replace()`/`rename()` it into place (the chunk workers' `*.part`
+  → `rename` pattern) — never write a final file in place, including sidecar/cache
+  JSON. Every operation must be safe to re-run from any interruption point.
+  Changes to on-disk state (history JSONL, `queue.json`) must stay
+  backward-compatible or ship a migration (see the `backward_compatible` test).
 
 ## 2. Keep modules under 500 lines
 
