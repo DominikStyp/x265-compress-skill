@@ -135,11 +135,15 @@ def render_slot_timing(slot_id: int, state: Optional[dict],
             f"ETA {eta_str:>7}{pause_label}")
 
 
-def render_help(has_key_input: bool) -> str:
+def render_help(has_key_input: bool, finish_requested: bool = False) -> str:
+    if finish_requested:
+        # Persistent banner so the pending stop is visible on every frame.
+        return ("  FINISH AFTER CHUNK: ON — stopping once in-flight chunks "
+                "finish (f=cancel)")
     if not has_key_input:
         return "  (keyboard pause/resume unavailable on this platform)"
     return ("  Keys: ↑↓ focus  Space toggle  1-9 slot N  "
-            "r resume all  ? help")
+            "r resume all  f finish  ? help")
 
 
 def render_chunks_line(already: int, completed_now: int, total: int,

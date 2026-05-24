@@ -28,6 +28,7 @@ from pathlib import Path
 
 from encode_modules.chunking import cleanup, reorder_middle_first, split_source
 from encode_modules.cli_args import parse_args
+from encode_modules.finish_signal import FINISH_FILENAME
 from encode_modules.history_state import (
     finalize_history_state,
     init_history_state,
@@ -35,7 +36,7 @@ from encode_modules.history_state import (
 )
 from encode_modules.preflight_decision import handle_preflight
 from encode_modules.probes import probe_duration
-from platform_compat import enable_ansi
+from platform_compat import enable_ansi, enable_utf8_io
 from encode_modules.reporting import (
     measure_quality_and_write_sidecar,
     print_summary,
@@ -48,9 +49,11 @@ from encode_modules.verify_loop import (
 )
 
 
-# Enable ANSI escape processing for the current terminal. On Windows this
-# turns on VT processing on the cmd.exe stdout handle; on POSIX it's a no-op
-# (modern terminals support ANSI natively).
+# Force UTF-8 stdout/stderr FIRST (before any output) so the display's
+# → / — / box-drawing glyphs survive a non-UTF-8 locale + redirected output
+# (headless / queue logs). Then enable ANSI VT processing (Win32) for the
+# in-place render; POSIX no-op.
+enable_utf8_io()
 enable_ansi()
 
 MAX_VERIFY_ATTEMPTS = 3
@@ -127,6 +130,8 @@ def main() -> int:
                                 patched_attempted=args.auto_patch_source)
 
     chunks = split_source(src, workdir, args.segment_seconds)
+    print(f"      To stop after the current chunk (resumable): press 'f' in "
+          f"the live display, or create {workdir / FINISH_FILENAME}")
     total_dur = (args.total_duration_seconds
                  if args.total_duration_seconds is not None
                  else sum(probe_duration(c) for c in chunks))

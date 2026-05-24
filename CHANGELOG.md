@@ -3,6 +3,35 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.0] — 2026-05-24
+
+### Added
+- **"Finish after current chunk"** — a graceful, resumable stop you can toggle
+  mid-encode. Press `f` in the live parallel display (or, for headless / serial
+  runs, create a `FINISH` file in the workdir — the exact path is printed at
+  startup) to let the chunks already encoding finish, start no new ones, and
+  stop the encode **and** the queue. The encoder exits `stopped-by-user`
+  (code 8) and `run_queue.py` halts; re-run to resume from the next chunk.
+  In-flight chunks are never killed, and the stop-file is consumed once honored
+  so a re-run doesn't immediately re-stop.
+
+### Fixed
+- **UnicodeEncodeError on redirected output under a non-UTF-8 locale.** On
+  Windows code pages such as cp1250, redirecting stdout (headless / `nohup` /
+  queue log) made Python encode output in the locale codepage and crash on the
+  `→` / box-drawing glyphs in the quality summary and live display. The entry
+  points now force UTF-8 stdout/stderr via `platform_compat.enable_utf8_io()`.
+- **LF-only `.bat` generation.** cmd.exe requires CRLF in `.bat` files; with
+  bare LF it dropped a leading character per line (`chcp`→`cp`, `title`→`tle`).
+  Generated `.bat` files are normalized to CRLF on Windows (`.sh` stays LF).
+
+### Changed
+- **Install-path docs.** Documented both the `~/.claude/plugins/...` (installer
+  default) and `~/.claude/skills/...` (user-skill) layouts, and reconciled the
+  invocation paths throughout README / SKILL.md.
+- The `run_queue.py` aggregate exit code `2` (needs-attention) now also covers
+  the new `stopped-by-user` outcome; the queue halts on it.
+
 ## [1.2.0] — 2026-05-24
 
 Robustness pass from a multi-perspective audit: correctness fixes in the

@@ -25,6 +25,7 @@ from .keyboard_input import keyboard_listener
 from .messages import (
     print_choke_guard_announcement,
     print_encode_plan,
+    print_finish_stopped_block,
     print_runtime_protections,
     print_threshold_abort_block,
 )
@@ -55,7 +56,7 @@ def _worker(slot: int, ctx: _WorkerContext) -> None:
     needs_fix sidecar — the Linda 0003 incident)."""
     display = ctx.display
     while True:
-        if display.abort_event.is_set():
+        if display.abort_event.is_set() or display.finish_signal.requested:
             return
         try:
             chunk = ctx.work_q.get_nowait()
@@ -294,6 +295,22 @@ def encode_chunks_parallel(chunks: list[Path], workdir: Path, *,
         mark_status("stopped-threshold", abort_reason=display.abort_reason)
         print_threshold_abort_block(workdir, display.abort_reason)
         sys.exit(3)
+
+    # User asked to finish after the current chunk(s): stop resumably if any
+    # chunks remain. The threshold abort (above) takes precedence.
+    if display.finish_signal.requested:
+        # Clear the sentinel whenever a finish was requested — even if every
+        # chunk happened to finish first — so a stale FINISH file can't stop
+        # the next run in this workdir.
+        display.finish_signal.consume_stop_file()
+        remaining = [c for c in chunks
+                     if not (workdir / f"enc_{c.stem}.mkv").exists()]
+        if remaining:
+            mark_status("stopped-by-user",
+                        remaining_chunks=len(remaining),
+                        total_chunks=len(chunks))
+            print_finish_stopped_block(workdir, len(remaining), len(chunks))
+            sys.exit(8)
 
     # Real failures = non-zero rc that isn't a choke skip (those are
     # already tallied above and don't sys.exit — they cause concat to be

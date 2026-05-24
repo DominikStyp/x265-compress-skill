@@ -25,6 +25,7 @@ _EXIT_STATUS: dict[int, str] = {
     5: "chunk-choked",        # legacy whole-file abort, kept for back-compat
     6: "pre-flight-failed",
     7: "awaiting-chunk-fix",
+    8: "stopped-by-user",      # graceful 'finish after current chunk' stop
 }
 
 

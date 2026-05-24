@@ -325,6 +325,8 @@ def _cli_from_json(argv: list[str]) -> int:
 
 
 def main() -> int:
+    from platform_compat import enable_utf8_io
+    enable_utf8_io()  # the "Report: <path>" line may be non-ASCII -> utf-8
     if len(sys.argv) < 2 or sys.argv[1] not in ("single", "from-json"):
         print("Usage: python report.py {single | from-json} ...", file=sys.stderr)
         print("  single <md> <input> <output> [--crf N] [--preset NAME] ...", file=sys.stderr)

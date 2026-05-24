@@ -93,3 +93,21 @@ def os_name() -> str:
     if IS_LINUX:
         return "Linux"
     return sys.platform
+
+
+def enable_utf8_io() -> None:
+    """Force stdout/stderr to UTF-8 so non-ASCII output (the → / — / box-drawing
+    glyphs in the live display and summaries, accented filenames) doesn't crash
+    with UnicodeEncodeError when the OS locale codepage isn't UTF-8 (notably
+    Windows cp125x) AND output is redirected to a file or pipe — i.e. headless /
+    queue-log runs, where Python uses the locale encoding instead of the
+    console's. A no-op where stdout is already UTF-8 (POSIX, or a chcp-65001
+    console). Call once at startup, before any output."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # e.g. a StringIO in tests — nothing to do
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass

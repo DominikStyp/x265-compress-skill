@@ -31,6 +31,7 @@ import json
 import sys
 from pathlib import Path
 
+from platform_compat import enable_utf8_io
 from queue_modules.job_runner import run_one_job
 from queue_modules.job_schema import derive_output_path, merge_job
 from queue_modules.queue_io import reload_queue_with_retry
@@ -134,7 +135,7 @@ def _write_aggregate_reports(skill_dir: Path, queue_path: Path,
 _CLEAN_STATUSES = {"ok", "skipped-exists"}
 _ATTENTION_STATUSES = {
     "stopped-threshold", "awaiting-chunk-fix", "skipped-not-found",
-    "pre-flight-failed", "chunk-choked",
+    "pre-flight-failed", "chunk-choked", "stopped-by-user",
 }
 
 
@@ -187,7 +188,18 @@ def _emit_json_status(path, row: dict) -> None:
         print(f"WARNING: --json-status write failed: {e}", file=sys.stderr)
 
 
+def _should_halt_after(status: str, stop_on_failure: bool) -> bool:
+    """Whether to stop launching further queue jobs after a job ended with
+    `status`. A user-requested finish (`stopped-by-user`) always halts the
+    queue — that's the point of the feature ('stop the queue too'). A real
+    failure halts only under --stop-on-failure."""
+    if status == "stopped-by-user":
+        return True
+    return stop_on_failure and status.startswith("failed")
+
+
 def main() -> int:
+    enable_utf8_io()  # status/report output -> utf-8 even when redirected
     args = _parse_args()
     queue_path = Path(args.queue_file).resolve()
     if not queue_path.is_file():
@@ -272,7 +284,9 @@ def main() -> int:
         if args.json_status:
             _emit_json_status(args.json_status, row)
 
-        if status.startswith("failed") and args.stop_on_failure:
+        if _should_halt_after(status, args.stop_on_failure):
+            if status == "stopped-by-user":
+                print("Queue halted: stopped by user — re-run to resume.")
             break
 
     _print_summary_table(job_reports)

@@ -43,6 +43,7 @@ from platform_compat import (
     suspend_pid,
 )
 
+from .finish_signal import FINISH_FILENAME, FinishSignal
 from .probes import probe_duration
 from . import display_render as render
 
@@ -126,6 +127,11 @@ class ParallelDisplay:
 
         # Threshold-abort plumbing
         self.workdir = workdir
+        # 'Finish after current chunk' request — set by the `f` key (below) or
+        # by a <workdir>/FINISH stop-file (headless/serial). Workers consult it
+        # between chunks; it never interrupts an in-flight chunk.
+        self.finish_signal = FinishSignal(
+            (workdir / FINISH_FILENAME) if workdir else None)
         self.total_duration = total_duration_sec
         self.source_bytes = source_bytes
         self.max_output_bytes = max_output_bytes
@@ -390,6 +396,17 @@ class ParallelDisplay:
         with self.lock:
             self.focused_slot = (self.focused_slot + delta) % self.parallel
 
+    def toggle_finish(self) -> str:
+        """Toggle the 'finish after current chunk' request (keyboard `f`).
+        Returns a one-line status for the event log. When ON, workers stop
+        pulling new chunks once their current chunk completes, and the encode
+        exits resumably (re-run to continue)."""
+        if self.finish_signal.toggle():
+            return ("  >> FINISH AFTER CURRENT CHUNK: ON — no new chunks will "
+                    "start; in-flight chunks finish, then it stops "
+                    "(re-run to resume).")
+        return "  >> FINISH AFTER CURRENT CHUNK: OFF — continuing normally."
+
     # --- size projection + threshold ---
 
     def _compute_projection(self) -> dict:
@@ -466,7 +483,8 @@ class ParallelDisplay:
             proj, self.total, self.start) + "\n")
         sys.stdout.write("\033[K" + render.render_size_line(
             proj, self.source_bytes, self.max_output_bytes) + "\n")
-        sys.stdout.write("\033[K" + render.render_help(HAS_KEY_INPUT) + "\n")
+        sys.stdout.write("\033[K" + render.render_help(
+            HAS_KEY_INPUT, self.finish_signal.requested) + "\n")
         sys.stdout.flush()
         self.printed_live = True
 

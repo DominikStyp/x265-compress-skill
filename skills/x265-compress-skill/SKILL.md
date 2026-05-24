@@ -222,9 +222,11 @@ Trade-offs:
   | 1–9 | Toggle slot N directly (the digit matches the on-screen `[slot N]` label) |
   | `0` | Toggle slot 10 (only relevant if `--parallel 10`) |
   | `r` | Resume every paused slot at once |
+  | `f` | Toggle **finish after current chunk**: finish in-flight chunks, start no new ones, then stop the encode AND the queue (resumable — re-run to continue) |
   | `?` / `h` | Print the key list as an event in the live log |
 
   Paused slots show `[PAUSED]` next to the chunk row and burn zero CPU. Suspension uses Win32 `NtSuspendProcess` on the ffmpeg PID directly, so x265's RAM state (lookahead, reference frames, RC) is preserved bit-for-bit — when you resume, ffmpeg picks up at the exact same frame with no quality loss. Works in single-file mode and inside `run_queue.py` (the queue runner inherits stdin so keypresses flow through cmd → bat → python).
+  **Finish after the current chunk (`f`)** — a graceful stop: in-flight chunks complete, no new chunks start, and the encode exits resumably (exit code 8 = `stopped-by-user`), which also halts the queue. Re-run to pick up from the next chunk. Headless or serial runs (no keyboard) trigger the same stop by creating a `FINISH` file in the workdir — `encode_resumable.py` prints the exact path at startup; it's consumed when honored.
 - **Hard-kill safety**: every ffmpeg child is assigned to a Windows **Job Object** with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. If you `taskkill /F` the script (or hit a BSOD, or anything else that bypasses normal shutdown), the kernel automatically TerminateProcess's every assigned ffmpeg the moment the parent's handle to the job closes. No more "I killed Python and now there are 4 suspended ffmpeg orphans I have to hunt down". On a clean exit (Ctrl+C / normal completion / threshold abort), the same protection applies — the `finally` block also calls `resume_all()` first so paused chunks aren't left half-flushed, but the Job Object is the canonical safety net. You'll see `Process protection: ffmpeg children auto-killed if this script dies (Job Object).` near the start of each parallel encode.
 - **Quality is identical** to serial resumable mode — the encoder params per chunk are the same; only the scheduling changes.
 
@@ -466,7 +468,8 @@ Notes:
 - **Skip existing outputs** by default (override with `--no-skip-existing`).
 - **Continue on per-job failure** by default (override with `--stop-on-failure`).
 - **Threshold-aborts never stop the queue** regardless of `--stop-on-failure` — the whole point of the size guard is "this one isn't worth keeping; move on".
-- **Final summary table** lists each job and its status: `ok`, `skipped-exists`, `skipped-not-found`, `stopped-threshold`, `pre-flight-failed`, `awaiting-chunk-fix`, `chunk-choked`, `failed-gen`, `failed-parse`, `failed-exit-<N>`. Queue exit code: `0` = all clean, `1` = a real failure (`failed-*`), `2` = a job needs attention (`stopped-threshold`, `awaiting-chunk-fix`, `skipped-not-found`, `pre-flight-failed`, `chunk-choked`) — a hard failure outranks needs-attention. Pass `--json-status <path>` for an NDJSON per-job stream (machine-readable; stdout stays human-readable).
+- **"Finish after current chunk" DOES stop the queue** — pressing `f` (or creating a `FINISH` file) is an explicit "stop everything" request: the current file stops after its in-flight chunks finish, no further jobs start, and the queue exits (`stopped-by-user`, exit 8). Resumable — re-run the queue to continue.
+- **Final summary table** lists each job and its status: `ok`, `skipped-exists`, `skipped-not-found`, `stopped-threshold`, `pre-flight-failed`, `awaiting-chunk-fix`, `chunk-choked`, `stopped-by-user`, `failed-gen`, `failed-parse`, `failed-exit-<N>`. Queue exit code: `0` = all clean, `1` = a real failure (`failed-*`), `2` = a job needs attention (`stopped-threshold`, `awaiting-chunk-fix`, `skipped-not-found`, `pre-flight-failed`, `chunk-choked`) — a hard failure outranks needs-attention. Pass `--json-status <path>` for an NDJSON per-job stream (machine-readable; stdout stays human-readable).
 - **Resumable inside a job** still works — if the queue is killed mid-job, re-run it and the in-progress job resumes from its last completed chunk; preceding jobs are skipped because their output already exists.
 
 ## Markdown reports
@@ -511,7 +514,7 @@ _Generated: 2026-05-16 21:40:55_
 | # | File | Status | Input | Output | Saved | Saved % | CRF | Preset | Time | VMAF | vmaf_lo | PSNR | SSIM | Grade | Method |
 ```
 
-The Status column uses the same vocabulary as the queue runner: `ok`, `skipped-exists`, `skipped-not-found`, `stopped-threshold`, `pre-flight-failed`, `awaiting-chunk-fix`, `chunk-choked`, `failed-gen`, `failed-parse`, `failed-exit-<N>`. Skipped/aborted/failed rows still appear in the table (with `—` for Output/Saved) so you can see *every* attempt. Quality columns (VMAF, vmaf_lo, PSNR, SSIM, Grade, Method) appear only when at least one job has a quality sidecar.
+The Status column uses the same vocabulary as the queue runner: `ok`, `skipped-exists`, `skipped-not-found`, `stopped-threshold`, `pre-flight-failed`, `awaiting-chunk-fix`, `chunk-choked`, `stopped-by-user`, `failed-gen`, `failed-parse`, `failed-exit-<N>`. Skipped/aborted/failed rows still appear in the table (with `—` for Output/Saved) so you can see *every* attempt. Quality columns (VMAF, vmaf_lo, PSNR, SSIM, Grade, Method) appear only when at least one job has a quality sidecar.
 
 To opt out of the per-file report on a direct `compress.py` run, pass `--no-report`.
 

@@ -30,6 +30,7 @@ from pathlib import Path
 from compress_modules.plan import pick_parallel, plan_encode
 from compress_modules.probe import analyse
 from compress_modules.script_writer import write_script
+from platform_compat import enable_utf8_io
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -141,6 +142,7 @@ def _archival_size_guard_warning(crf: int,
 
 
 def main() -> int:
+    enable_utf8_io()  # ensure_ascii=False JSON + warnings -> utf-8 if redirected
     args = _build_arg_parser().parse_args()
 
     source_path = Path(args.input).resolve()

@@ -105,3 +105,21 @@ def print_threshold_abort_block(workdir: Path, abort_reason: str) -> None:
     print(f"{Y}  CRF (--crf <N>) to reduce size, or delete the workdir to{R}")
     print(f"{Y}  start fresh.{R}")
     print(f"{Y}=================================================={R}")
+
+
+def print_finish_stopped_block(workdir: Path, remaining: int,
+                               total: int) -> None:
+    """Yellow-bold box shown when the user asked to finish after the current
+    chunk (keyboard `f` or a FINISH stop-file). The encode stopped gracefully
+    with `remaining` chunks still to do; encoded chunks are preserved and a
+    re-run resumes from the next one."""
+    Y, R = "\033[33;1m", "\033[0m"
+    done = total - remaining
+    print()
+    print(f"{Y}=================================================={R}")
+    print(f"{Y}  FINISHED CURRENT CHUNK — STOPPED BY USER.{R}")
+    print(f"{Y}  {done}/{total} chunks done; {remaining} remaining.{R}")
+    print(f"{Y}  Encoded chunks are safe in {workdir}.{R}")
+    print(f"{Y}  Re-run this script (or the queue) to resume from the next "
+          f"chunk.{R}")
+    print(f"{Y}=================================================={R}")

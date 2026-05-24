@@ -201,6 +201,7 @@ or per-job (overrides the default for that one):
 | 4 | `failed-exit-4` | Verify failed after retries. Output renamed to `damaged_<name>.<ext>`. Chunks preserved |
 | 6 | `pre-flight-failed` | Source corruption pre-scan caught it. No encoding work done. With `auto_patch_source: true`, an h264 source would have been patched first |
 | 7 | `awaiting-chunk-fix` | At least one chunk choked. `enc_<chunk>.needs_fix.json` sidecar dropped in workdir. Re-run after fixing |
+| 8 | `stopped-by-user` | You pressed `f` / created a `FINISH` file — finished the current chunk(s), then stopped. Resumable; re-run to continue. **Halts the queue.** |
 | other | `failed-exit-N` | Genuine error. See logs |
 
 The queue runner keeps going past `stopped-threshold` and most failures by default. Pass `--stop-on-failure` to bail on the first real failure.

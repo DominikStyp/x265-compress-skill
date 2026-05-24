@@ -12,6 +12,7 @@ you press matches the on-screen label):
     1..9      pause/resume slot N directly (so `1` = first slot)
     0         pause/resume slot 10 (only matters for --parallel 10)
     r / R     resume every paused slot
+    f / F     toggle 'finish after current chunk' (graceful, resumable stop)
     ? / h     print the key list as an event in the live log
 
 Arrow keys come in four forms; we handle all of them:
@@ -106,10 +107,14 @@ def keyboard_listener(display, stop_event: threading.Event) -> None:
             for m in display.resume_all():
                 display.events.put(m)
             signal()
+        elif ch in (b"f", b"F"):
+            display.events.put(display.toggle_finish())
+            signal()
         elif ch in (b"?", b"h"):
             # NOTE: lowercase only — capital `H` is the legacy arrow-up code
             # and would otherwise fire help on every up-arrow press.
             display.events.put(
-                "  Keys: ↑↓=focus  Space=toggle  1-9=slot N  r=resume all  ?=help"
+                "  Keys: ↑↓=focus  Space=toggle  1-9=slot N  r=resume all  "
+                "f=finish  ?=help"
             )
             signal()

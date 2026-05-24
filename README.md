@@ -13,6 +13,9 @@ scripts run standalone from any shell.
 - **Resumable** — kill mid-encode, re-run, picks up at the first missing chunk
 - **Parallel chunks** — N concurrent ffmpegs with shared x265 thread pool,
   htop-style live display, per-slot pause/resume (`Space`, `1`-`9`, `r`)
+- **Finish after current chunk** — press `f` (or drop a `FINISH` file, for
+  headless) to stop gracefully once in-flight chunks complete; halts the queue,
+  fully resumable
 - **Source corruption guard** — pre-flight bitstream scan plus an opt-in
   surgical patch that re-encodes JUST the broken h264 GOPs
 - **Choke detection** — per-chunk progress watchdog frees a stuck slot

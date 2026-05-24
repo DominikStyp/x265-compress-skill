@@ -21,7 +21,9 @@ from platform_compat import (
 )
 
 from .chunking import ffmpeg_chunk_cmd, reorder_middle_first
-from .history_state import record_chunk_elapsed
+from .finish_signal import FINISH_FILENAME, FinishSignal
+from .history_state import mark_status, record_chunk_elapsed
+from .messages import print_finish_stopped_block
 from .probes import fmt_dur, probe_duration
 
 
@@ -54,10 +56,22 @@ def encode_chunks_serial(chunks: list[Path], workdir: Path, *,
         print(f"      Encoding order: middle-first "
               f"(next chunk: {first_pos}/{total})")
 
+    finish_signal = FinishSignal(workdir / FINISH_FILENAME)
     for chunk in encode_order:
         out = workdir / f"enc_{chunk.stem}.mkv"
         if out.exists():
             continue
+        if finish_signal.requested:
+            # User asked to finish after the current chunk; the previous chunk
+            # has already completed (we're at the top of the next iteration).
+            # Stop resumably — a re-run picks up from here.
+            finish_signal.consume_stop_file()
+            remaining = sum(1 for c in encode_order
+                            if not (workdir / f"enc_{c.stem}.mkv").exists())
+            mark_status("stopped-by-user",
+                        remaining_chunks=remaining, total_chunks=total)
+            print_finish_stopped_block(workdir, remaining, total)
+            sys.exit(8)
         part = workdir / f"enc_{chunk.stem}.part.mkv"
         if part.exists():
             # Serial path doesn't have choke detection so it can safely
