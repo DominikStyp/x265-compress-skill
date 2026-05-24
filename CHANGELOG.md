@@ -3,6 +3,15 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.4.1] — 2026-05-24
+
+### Documentation
+- **Concrete Pushbullet example for the `on_chunk_done` hook** (queue recipe 8),
+  with both a POSIX `curl` script and a Windows PowerShell script. The access
+  token (and target device) are read from environment variables rather than
+  stored in `queue.json` or the script — with a note to revoke any token that
+  leaks. No code change.
+
 ## [1.4.0] — 2026-05-24
 
 ### Added

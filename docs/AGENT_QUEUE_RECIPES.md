@@ -167,11 +167,18 @@ drop because grain costs bits.
 
 ---
 
-## Recipe 8 — "Notify me as each chunk finishes (Pusher / webhook)"
+## Recipe 8 — "Notify me as each chunk finishes (Pushbullet)"
 
 `on_chunk_done` runs a command after every chunk (success *and* failure). It's an
 argv list; chunk context arrives via `X265_*` env vars, so the script takes no
 arguments. Best-effort — a slow or failing hook never stalls or aborts the encode.
+
+> **Keep your access token OUT of `queue.json` and out of the script** — read it
+> from an environment variable. A token written into a queue file or a committed
+> script leaks easily; if one ever lands in a shell history, a log, or a paste,
+> revoke it at **pushbullet.com → Settings → Access Tokens** and issue a new one.
+
+Point the hook at a small script (POSIX shown; Windows below):
 
 ```json
 {
@@ -179,7 +186,7 @@ arguments. Best-effort — a slow or failing hook never stalls or aborts the enc
     "crf": 22,
     "parallel": "auto",
     "resumable": true,
-    "on_chunk_done": ["bash", "/home/me/notify.sh"]
+    "on_chunk_done": ["bash", "/home/me/notify-pushbullet.sh"]
   },
   "jobs": [
     {"input": "*.mkv"}
@@ -187,15 +194,52 @@ arguments. Best-effort — a slow or failing hook never stalls or aborts the enc
 }
 ```
 
-`/home/me/notify.sh`:
+`/home/me/notify-pushbullet.sh`:
 
 ```bash
 #!/usr/bin/env bash
-curl -fsS -X POST https://api.example/notify \
-  -d "text=${X265_CHUNK_INDEX}/${X265_CHUNK_TOTAL} ${X265_CHUNK_STATUS}: $(basename "$X265_SOURCE")"
+# Token (and target device) come from the environment — NOT this file:
+#   export PUSHBULLET_TOKEN=o.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#   export PUSHBULLET_DEVICE=XXXXXXXXXXXXXXXXXXXXXX   # or delete the device_iden line to notify all devices
+set -euo pipefail
+
+pct=$(awk "BEGIN{printf \"%.1f\", 100*${X265_CHUNK_INDEX}/${X265_CHUNK_TOTAL}}")
+name=$(basename "$X265_SOURCE")
+
+curl -fsS -X POST https://api.pushbullet.com/v2/pushes \
+  --header "Access-Token: ${PUSHBULLET_TOKEN:?set PUSHBULLET_TOKEN in your env}" \
+  --header 'Content-Type: application/json' \
+  --data @- <<JSON
+{"type":"note",
+ "title":"Chunk ${X265_CHUNK_INDEX}/${X265_CHUNK_TOTAL} ${X265_CHUNK_STATUS} (${pct}%)",
+ "body":"${name}",
+ "device_iden":"${PUSHBULLET_DEVICE}"}
+JSON
 ```
 
-Windows: use `["pwsh","-File","C:/tools/notify.ps1"]` and read `$env:X265_CHUNK_INDEX`, etc.
+Windows — `"on_chunk_done": ["pwsh", "-File", "C:/tools/notify-pushbullet.ps1"]`, with:
+
+```powershell
+# notify-pushbullet.ps1 — token + device from the environment, never the file:
+#   $env:PUSHBULLET_TOKEN, $env:PUSHBULLET_DEVICE  (drop device_iden to notify all devices)
+$ErrorActionPreference = 'Stop'
+$pct  = [math]::Round(100 * [int]$env:X265_CHUNK_INDEX / [int]$env:X265_CHUNK_TOTAL, 1)
+$payload = @{
+    type        = 'note'
+    title       = "Chunk $($env:X265_CHUNK_INDEX)/$($env:X265_CHUNK_TOTAL) $($env:X265_CHUNK_STATUS) ($pct%)"
+    body        = [IO.Path]::GetFileName($env:X265_SOURCE)
+    device_iden = $env:PUSHBULLET_DEVICE
+} | ConvertTo-Json -Compress
+Invoke-RestMethod -Method Post -Uri 'https://api.pushbullet.com/v2/pushes' `
+    -Headers @{ 'Access-Token' = $env:PUSHBULLET_TOKEN } `
+    -ContentType 'application/json' -Body $payload
+```
+
+Each finished chunk pushes a note like **"Chunk 7/10 ok (70.0%)"** with the source
+filename as the body. `X265_CHUNK_STATUS` is `failed` for a chunk that produced no
+output, so you're alerted to problems too — not just progress. The hook is
+best-effort: if Pushbullet is down, the `curl` failure is logged and the encode
+keeps going.
 
 ---
 
