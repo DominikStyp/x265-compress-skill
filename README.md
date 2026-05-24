@@ -255,13 +255,16 @@ else in the codebase changes.
 | Subprocess priority | `IDLE_PRIORITY_CLASS` creationflag | `nice -n 19` cmd wrapper (thread-safe alt to preexec_fn) |
 | Suspend / resume | `NtSuspendProcess` / `NtResumeProcess` | `SIGSTOP` / `SIGCONT` |
 | ANSI escape support | `SetConsoleMode` VT processing | Native (no-op) |
-| Kill children with parent | Win32 Job Object (`KILL_ON_JOB_CLOSE`) | Process group + `atexit`/`SIGTERM` handler |
+| Kill children with parent | Win32 Job Object (`KILL_ON_JOB_CLOSE`) | Process group + `atexit`/SIGTERM/SIGHUP/SIGQUIT handlers + `getppid` watchdog (covers `kill -9`) |
 | Single-char keyboard | `msvcrt.getch` | `termios` cbreak + `select.select` |
 | Encoder script | `.bat` (cmd.exe + `chcp 65001`) | `.sh` (bash + UTF-8 native) |
 
-Known gap on POSIX: a `kill -9` of the parent Python skips signal handlers
-and will orphan in-flight ffmpeg children. Win32 Job Objects survive that;
-POSIX has no exact equivalent. Doesn't affect Ctrl+C, normal exits, or
-SIGTERM — only the hard-kill case. Running under systemd closes even that
-gap: put the encode in a unit with `KillMode=control-group` and the cgroup
-reaps any orphaned ffmpeg when the service stops.
+On POSIX, lifetime cleanup runs on graceful exit, SIGTERM, SIGHUP
+(terminal/window close), and SIGQUIT. A hard `kill -9` of the parent Python
+skips every signal handler — Win32 Job Objects survive that and POSIX has no
+in-process equivalent — so a sidecar watchdog process backstops it: it observes
+the orchestrator die (via `os.getppid()` reparenting) and reaps the in-flight
+ffmpeg process-groups. The watchdog is best-effort; if it can't spawn, behaviour
+degrades to the signal/atexit cleanup (covers everything except parent SIGKILL).
+Running under systemd closes the gap belt-and-suspenders: put the encode in a
+unit with `KillMode=control-group` and the cgroup reaps any survivor.

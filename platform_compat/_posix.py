@@ -24,9 +24,11 @@ import atexit
 import os
 import select
 import signal
+import subprocess
 import sys
-import time
-from typing import Optional
+from typing import Callable, Optional
+
+from ._posix_watchdog import QUIT_SENTINEL, kill_groups
 
 
 # --- Subprocess priority ----------------------------------------------------
@@ -97,65 +99,114 @@ def enable_ansi() -> None:
 class _LifetimeGroup:
     """Tracks child PIDs so they can be killed when the parent exits.
 
-    Each registered PID is the leader of its own process group (set up
-    in the spawn-prep hook via os.setpgrp). On parent exit (graceful or
-    SIGTERM) we send SIGTERM to each pgid — kills the child + any sub-
-    children it spawned. After a brief grace period unhandled survivors
-    get SIGKILL.
+    Each registered PID is the leader of its own process group (start_new_session
+    in the spawn kwargs). On parent exit — graceful, SIGTERM, SIGHUP (terminal
+    close), or SIGQUIT — we send SIGTERM to each pgid (kills the child + any
+    sub-children it spawned), then SIGKILL survivors after a grace period.
 
-    Known gap: SIGKILL of the parent (kill -9) skips the handlers and
-    will orphan children. No POSIX equivalent of Win32 Job Object's
-    kernel-enforced cleanup. The render thread's resume_all() on
-    KeyboardInterrupt covers the common Ctrl+C path."""
+    The one case no in-process handler can cover is SIGKILL (`kill -9`) of the
+    parent, which skips atexit AND every signal handler. For that we spawn a
+    sidecar watchdog process (see _posix_watchdog) that reaps the tracked groups
+    when it observes the orchestrator die. Together these give parity with the
+    Win32 Job Object's kernel-enforced cleanup. SIGINT is intentionally left
+    alone so Python's normal KeyboardInterrupt still drives the encoder's
+    resume_all() path."""
 
-    def __init__(self) -> None:
+    def __init__(self, *,
+                 spawn_watchdog: Optional[Callable[[], Optional[object]]] = None,
+                 killpg: Optional[Callable[[int, int], None]] = None) -> None:
         self.pids: set[int] = set()
+        self._killpg = killpg
+        self._watchdog = (spawn_watchdog or self._spawn_watchdog)()
         atexit.register(self._cleanup)
         self._install_signal_handlers()
 
-    def _install_signal_handlers(self) -> None:
-        """Chain a cleanup handler in front of the existing SIGTERM
-        handler. SIGINT is intentionally left alone so Python's normal
-        KeyboardInterrupt mechanics still drive the resume_all() path
-        in the encoder."""
-        prev_term = signal.getsignal(signal.SIGTERM)
-
-        def term_handler(signum, frame):
-            self._cleanup()
-            if callable(prev_term):
-                prev_term(signum, frame)
-            else:
-                sys.exit(128 + signum)
-
+    def _spawn_watchdog(self) -> Optional[object]:
+        """Launch the sidecar watchdog as a fresh interpreter (posix_spawn —
+        thread-safe, unlike os.fork in this multi-threaded process). Best-effort:
+        on any failure we degrade to atexit/signal cleanup only (covers
+        everything except parent SIGKILL), never breaking the encode."""
+        script = os.path.join(os.path.dirname(__file__), "_posix_watchdog.py")
         try:
-            signal.signal(signal.SIGTERM, term_handler)
-        except (ValueError, OSError):
-            # ValueError if not main thread; OSError on some sandboxed envs.
-            pass
+            return subprocess.Popen(
+                [sys.executable, script, str(os.getpid())],
+                stdin=subprocess.PIPE, text=True,
+                # Own session so a terminal SIGHUP doesn't kill the watchdog
+                # before it can act — it must outlive the orchestrator briefly.
+                start_new_session=True,
+            )
+        except (OSError, ValueError):
+            # Spawn failed (e.g. sandboxed, no exec). The watchdog is a backstop
+            # for parent-SIGKILL only; degrade to atexit/signal cleanup rather
+            # than ever breaking the encode over it.
+            return None
+
+    def _install_signal_handlers(self) -> None:
+        """Chain a cleanup handler in front of the existing handler for each
+        termination signal we can catch. SIGHUP (terminal/window close) and
+        SIGQUIT are added because closing the launching terminal otherwise
+        bypasses cleanup and orphans the ffmpeg children. getattr-guarded so the
+        module still imports on Windows (no SIGHUP/SIGQUIT there)."""
+        for signame in ("SIGTERM", "SIGHUP", "SIGQUIT"):
+            sig = getattr(signal, signame, None)
+            if sig is None:
+                continue
+            prev = signal.getsignal(sig)
+
+            def handler(signum, frame, _prev=prev):
+                self._cleanup()
+                if callable(_prev):
+                    _prev(signum, frame)
+                else:
+                    sys.exit(128 + signum)
+
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):
+                # ValueError if not main thread; OSError on some sandboxed envs.
+                pass
 
     def add(self, pid: int) -> None:
+        # Must be called while the orchestrator is live (before teardown begins)
+        # — workers register their ffmpeg here as they spawn it, never during
+        # _cleanup. pgids accumulate across a multi-file queue run and are never
+        # pruned; that's intentional (pruning would need liveness tracking the
+        # design avoids), and reaping an already-dead pgid is a harmless no-op.
         self.pids.add(int(pid))
+        # Stream the pgid to the watchdog so it can reap this group if we die
+        # without running cleanup (parent SIGKILL). Best-effort.
+        self._tell_watchdog(f"{int(pid)}\n")
+
+    def _tell_watchdog(self, message: str) -> None:
+        wd = self._watchdog
+        stdin = getattr(wd, "stdin", None) if wd is not None else None
+        if stdin is None:
+            return
+        try:
+            stdin.write(message)
+            stdin.flush()
+        except (OSError, ValueError):
+            # Watchdog gone or pipe closed — fall back to in-process cleanup.
+            pass
 
     def _cleanup(self) -> None:
-        """Send SIGTERM to every tracked process group, then SIGKILL the
-        survivors after 1 s grace. Idempotent — safe to call multiple
-        times (atexit + signal handler may both fire)."""
-        survivors: list[int] = []
-        for pid in list(self.pids):
+        """Reap every tracked process group (SIGTERM, grace, SIGKILL), then
+        stand the watchdog down. Idempotent — safe to call multiple times
+        (atexit + signal handler may both fire)."""
+        pids = list(self.pids)
+        self.pids.clear()
+        kill_groups(pids, killpg=self._killpg)
+        # Tell the watchdog to exit without re-reaping (groups already gone),
+        # then close the pipe. If we were SIGKILLed this never runs and the
+        # watchdog reaps via getppid instead.
+        self._tell_watchdog(f"{QUIT_SENTINEL}\n")
+        wd = self._watchdog
+        stdin = getattr(wd, "stdin", None) if wd is not None else None
+        if stdin is not None:
             try:
-                os.killpg(pid, signal.SIGTERM)
-                survivors.append(pid)
-            except (OSError, ProcessLookupError):
+                stdin.close()
+            except (OSError, ValueError):
                 pass
-            self.pids.discard(pid)
-        if survivors:
-            # Give well-behaved children a moment to flush + exit.
-            time.sleep(1.0)
-            for pid in survivors:
-                try:
-                    os.killpg(pid, signal.SIGKILL)
-                except (OSError, ProcessLookupError):
-                    pass
 
 
 _singleton_group: Optional[_LifetimeGroup] = None

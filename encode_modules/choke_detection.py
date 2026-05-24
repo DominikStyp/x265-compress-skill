@@ -50,18 +50,38 @@ def check_choke(display: "ParallelDisplay") -> Optional[tuple[int, str]]:
             or display.choke_grace_seconds <= 0):
         return None
     now = time.monotonic()
+    now_wall = time.time()
 
     # System-sleep / hibernation guard. The render loop normally fires every
     # ~500 ms; a multi-minute gap between consecutive check_choke calls means
-    # the whole process was suspended. On Windows, time.monotonic() resumes
-    # counting the suspended wall time, so every slot would look "choked for
-    # hours" with no fresh progress samples. Reset the relevant slot bookkeeping
-    # and skip the choke verdict for THIS cycle so ffmpeg can settle post-wake.
+    # the whole process was suspended (the also-suspended ffmpeg produced no
+    # fresh out_time samples during the nap, so every slot would otherwise look
+    # choked on wake). Reset the slot bookkeeping and skip the verdict for THIS
+    # cycle so ffmpeg can settle post-wake.
+    #
+    # Detect suspend clock-agnostically by tracking BOTH clocks: across a system
+    # sleep the wall clock (time.time()) always advances by the real elapsed
+    # time, but time.monotonic() FREEZES on macOS/Linux and KEEPS COUNTING on
+    # Windows. A single-clock check only caught the Windows case and let macOS
+    # fall through to a false choke. Tripping on max(monotonic_gap, wall_gap)
+    # catches the suspend on every platform regardless of which clock froze.
+    #
+    # Wall time is non-monotonic, so a forward clock step (NTP/manual) >
+    # sleep_threshold could trip this without a real suspend — but the only cost
+    # is masking a genuine choke for ONE cycle (it reasserts on the next check
+    # after the grace window re-elapses), and steady-state NTP slews rather than
+    # steps. A backward step makes wall_gap negative, so max() falls back to the
+    # monotonic gap — no spurious trip. The rare, self-healing false-positive is
+    # far cheaper than the false-negative (every chunk restarted on every wake).
     last_check = getattr(display, "_last_choke_check_at", None)
+    last_wall = getattr(display, "_last_choke_check_wall", None)
     sleep_threshold = getattr(display, "sleep_detect_seconds", 120.0)
     display._last_choke_check_at = now
-    if last_check is not None and (now - last_check) > sleep_threshold:
-        gap = now - last_check
+    display._last_choke_check_wall = now_wall
+    mono_gap = (now - last_check) if last_check is not None else 0.0
+    wall_gap = (now_wall - last_wall) if last_wall is not None else 0.0
+    gap = max(mono_gap, wall_gap)
+    if (last_check is not None or last_wall is not None) and gap > sleep_threshold:
         with display.lock:
             for s in display.slots.values():
                 s["t_start"] = now

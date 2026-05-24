@@ -195,16 +195,17 @@ class ParallelDisplay:
         self.choke_min_delta_seconds = 1.0
         # System-sleep / hibernation guard. The render loop calls check_choke
         # at ~2 Hz (every 500 ms). A huge gap between two consecutive calls
-        # means the whole process was suspended (sleep / hibernate). On the
-        # next post-wake call, time.monotonic() has jumped by the
-        # suspension duration on Windows — without this guard, every slot
-        # looks "choked for hours" with an empty samples deque (no ffmpeg
-        # progress lines flowed during sleep). When the gap exceeds
-        # `sleep_detect_seconds`, we reset every slot's t_start to `now`
-        # and clear its out_time_samples so the grace window restarts
-        # cleanly post-wake.
+        # means the whole process was suspended (sleep / hibernate) — without
+        # this guard, every slot looks "choked for hours" with an empty samples
+        # deque (no ffmpeg progress flowed during sleep). check_choke detects
+        # the gap clock-agnostically from BOTH clocks (see choke_detection):
+        # across suspend the wall clock always advances, while time.monotonic()
+        # freezes on macOS/Linux and keeps counting on Windows. When the larger
+        # gap exceeds `sleep_detect_seconds`, it resets every slot's t_start to
+        # `now` and clears out_time_samples so the grace window restarts cleanly.
         self.sleep_detect_seconds = 120.0
         self._last_choke_check_at: Optional[float] = None
+        self._last_choke_check_wall: Optional[float] = None
         self.choked_chunks: dict[str, dict] = {}
         self.has_choked_chunks = threading.Event()
 

@@ -3,6 +3,29 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.0] — 2026-05-25
+
+### Fixed
+- **No more false chunk-chokes after the laptop sleeps (macOS/Linux).** The
+  choke detector's system-sleep guard inferred sleep from a jump in
+  `time.monotonic()`, which keeps counting suspended time on Windows but
+  *freezes* across system sleep on macOS/Linux — so the guard only ever fired on
+  Windows, and every in-flight chunk got falsely flagged as choked and restarted
+  on each wake. It now detects suspend clock-agnostically by tracking both the
+  monotonic and wall clocks and tripping on the larger gap, so it works on all
+  three platforms. Observed on a real macOS run.
+
+### Added
+- **Orphaned-ffmpeg watchdog on POSIX (parity with the Windows Job Object).**
+  When the orchestrator dies, the chunk ffmpeg encoders no longer keep running.
+  Two layers: the lifetime cleanup now also fires on **SIGHUP** (terminal/window
+  close) and **SIGQUIT**, and a new sidecar watchdog process reaps the tracked
+  ffmpeg process-groups even on a hard `kill -9` of the orchestrator — detected
+  via `os.getppid()` reparenting, which no in-process signal handler can cover.
+  Best-effort and fully degradable: if the watchdog can't spawn, behaviour falls
+  back to the previous atexit/signal cleanup. Windows is unaffected (its Job
+  Object already reaps in-kernel).
+
 ## [1.4.3] — 2026-05-24
 
 ### Fixed
