@@ -105,14 +105,14 @@ agnostic; fall back to the canonical install path otherwise.
 # Windows — env var primary, plugins-dir fallback
 python "${env:CLAUDE_PLUGIN_ROOT}\compress.py" "<full path to source video>"
 # or:
-python "$env:USERPROFILE\.claude\plugins\x265-compress-skill\compress.py" "<source>"
+python "$env:USERPROFILE\.claude\skills\x265-compress-skill\compress.py" "<source>"
 ```
 
 ```bash
 # macOS / Linux
 python3 "${CLAUDE_PLUGIN_ROOT}/compress.py" "<full path to source video>"
 # or:
-python3 "$HOME/.claude/plugins/x265-compress-skill/compress.py" "<source>"
+python3 "$HOME/.claude/skills/x265-compress-skill/compress.py" "<source>"
 ```
 
 The script:
@@ -386,7 +386,7 @@ This salvage pattern is intentionally a **manual operator step**, not an automat
 For batch encoding of multiple files, write a JSON queue and feed it to the bundled `run_queue.py`. Each job inherits an optional `defaults` block and may override any compress.py flag per job.
 
 ```powershell
-python "$env:USERPROFILE\.claude\plugins\x265-compress-skill\run_queue.py" "C:\path\to\queue.json"
+python "$env:USERPROFILE\.claude\skills\x265-compress-skill\run_queue.py" "C:\path\to\queue.json"
 ```
 
 **Resuming + headless use.** A queue run resumes at two levels: re-running the same `queue.json` skips jobs whose output already exists, and within a job the chunk encoder picks up at the first missing chunk. So an interrupted run (SSH drop, reboot, `Ctrl+C`) just needs the same command again. For fire-and-forget over SSH, detach it — `nohup python3 run_queue.py queue.json > queue.log 2>&1 &`, or `tmux` / `systemd-run --user`. Under systemd use `KillMode=control-group` so the unit reaps ffmpeg children cleanly.
@@ -440,13 +440,13 @@ Unknown keys produce a warning and are dropped — gives you a typo safety net.
 
 ### Launcher (`run_queue.bat`)
 
-**Whenever you write a `queue.json`, also write a `run_queue.bat` next to it** so the user can start the encode by double-clicking instead of typing the python invocation. Use this exact template, saved UTF-8 without BOM:
+**Whenever you write a `queue.json`, also write a `run_queue.bat` next to it** so the user can start the encode by double-clicking instead of typing the python invocation. Use this exact template, saved UTF-8 without BOM and with **CRLF (Windows) line endings** — cmd.exe mis-parses LF-only .bat files, dropping leading characters per line (`chcp`→`cp`, `title`→`tle`):
 
 ```bat
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-python "%USERPROFILE%\.claude\plugins\x265-compress-skill\run_queue.py" "%~dp0queue.json"
+python "%USERPROFILE%\.claude\skills\x265-compress-skill\run_queue.py" "%~dp0queue.json"
 set QUEUE_RC=%errorlevel%
 pause
 exit /b %QUEUE_RC%

@@ -263,6 +263,14 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
     # Write without BOM. cmd.exe + chcp 65001 handles UTF-8; bash reads
     # UTF-8 natively. A BOM at the top of a .bat misparses on some cmd
     # versions; same for some POSIX shebang lines.
+    #
+    # Line endings: cmd.exe REQUIRES CRLF in .bat files. With bare LF it
+    # reads lines at the wrong byte offsets and drops a variable number of
+    # leading characters per line (e.g. `chcp`->`cp`, `title`->`tle`,
+    # `REM`->`EM`), producing "'cp' is not recognized" errors. POSIX shells
+    # want LF. Normalize per-OS regardless of what the templates contain.
+    if IS_WINDOWS:
+        content = content.replace("\r\n", "\n").replace("\n", "\r\n")
     out_path.write_bytes(content.encode("utf-8"))
     if not IS_WINDOWS:
         # +x so users can run the script directly. ~/sources may be on a
