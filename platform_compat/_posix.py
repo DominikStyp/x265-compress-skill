@@ -188,6 +188,11 @@ def assign_to_lifetime_group(pid: int, group: Optional[_LifetimeGroup]) -> bool:
 
 # --- Keyboard input (termios cbreak + select.select) ------------------------
 
+# Interactive pause/resume needs a real terminal. HAS_KEY_INPUT goes False —
+# the Space/1-9/r keys silently disappear while the encode itself runs on
+# unaffected — whenever stdin isn't a tty (piped, nohup, systemd, or a queue
+# runner with stdin redirected) or termios/tty is unavailable (e.g. TERM=dumb
+# on some stripped-down builds, or a non-POSIX stdin).
 try:
     import termios  # type: ignore
     import tty      # type: ignore

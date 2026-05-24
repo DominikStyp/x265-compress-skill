@@ -116,6 +116,13 @@ class ParallelDisplay:
         self.slots: dict[int, dict] = {}  # slot_id -> {chunk, duration, out_time_s, fps, speed}
         self.events: queue.Queue[str] = queue.Queue()
         self.printed_live = False
+        # Headless / non-tty output: when stdout isn't a terminal (piped to a
+        # log, nohup, systemd journal, CI), the ANSI in-place redraw corrupts
+        # the log — render() then switches to plain appended event lines + a
+        # throttled progress summary. Mirrors quality.py's isatty() gate.
+        self._is_tty = sys.stdout.isatty()
+        self._last_plain_summary = 0.0
+        self._plain_summary_interval_s = 30.0
 
         # Threshold-abort plumbing
         self.workdir = workdir
@@ -268,10 +275,25 @@ class ParallelDisplay:
 
     def register_proc(self, slot: int, proc: subprocess.Popen) -> None:
         with self.lock:
-            self.active_procs[slot] = proc
-            # New ffmpeg in this slot starts unsuspended; clear any stale
-            # paused-state from a prior chunk in the same slot.
-            self.paused_slots.discard(slot)
+            # Abort race: a worker launches its ffmpeg (chunk_worker Popen)
+            # and only THEN calls register_proc. If a threshold/choke abort
+            # fired in that window, its terminate sweep already snapshotted
+            # active_procs under this same lock — and abort_event is set
+            # BEFORE that snapshot — so adopting this proc now would leave a
+            # live ffmpeg the sweep never sees, running to completion
+            # unsupervised. Refuse it; kill it below (outside the lock).
+            aborting = self.abort_event.is_set()
+            if not aborting:
+                self.active_procs[slot] = proc
+                # New ffmpeg in this slot starts unsuspended; clear any stale
+                # paused-state from a prior chunk in the same slot.
+                self.paused_slots.discard(slot)
+        if aborting:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            return
         # Tie the child to our lifetime group so it dies with us. Done
         # OUTSIDE the lock — both backends do platform syscalls (Win32
         # AssignProcessToJobObject; POSIX set-add to the tracked group);
@@ -371,65 +393,12 @@ class ParallelDisplay:
     # --- size projection + threshold ---
 
     def _compute_projection(self) -> dict:
-        """Sum enc_*.mkv bytes + completed/active source seconds, project the
-        final output size. Cached for ~0.4 s so the render thread and
-        check_threshold share one workdir walk per refresh cycle.
-
-        Returned dict keys (always present, may be None / 0 if too early):
-            encoded_s         source seconds finished or in flight
-            progress_frac     encoded_s / total_duration   (0..)
-            enc_bytes         bytes on disk in enc_*.mkv + .part.mkv
-            bytes_per_sec     None until we have any encoded data
-            projected_bytes   None until >=5% progress (estimate is too noisy
-                              before that, both for the threshold check and
-                              for the user-facing size bar)
-        """
-        now = time.monotonic()
-        cached = self._projection_cache
-        if cached is not None and (now - cached["ts"]) < self._projection_ttl_s:
-            return cached
-
-        enc_bytes = 0
-        if self.workdir:
-            try:
-                for p in self.workdir.iterdir():
-                    name = p.name
-                    if name.startswith("enc_") and (
-                        name.endswith(".mkv") or name.endswith(".part.mkv")
-                    ):
-                        try:
-                            enc_bytes += p.stat().st_size
-                        except OSError:
-                            pass
-            except OSError:
-                pass
-
-        with self.lock:
-            active_source_s = sum(s.get("out_time_s", 0) for s in self.slots.values())
-            completed_s = self.completed_duration_sum
-        encoded_s = completed_s + active_source_s
-        progress_frac = (encoded_s / self.total_duration) if self.total_duration > 0 else 0.0
-
-        bytes_per_sec: Optional[float] = None
-        projected_bytes: Optional[float] = None
-        if encoded_s > 0 and enc_bytes > 0:
-            bytes_per_sec = enc_bytes / encoded_s
-            # Same 5% gate that the threshold check used to apply inline. Below
-            # that the byte-rate is dominated by initial-keyframe overhead and
-            # the projection is misleading.
-            if progress_frac >= 0.05 and self.total_duration > 0:
-                projected_bytes = bytes_per_sec * self.total_duration
-
-        proj = {
-            "ts": now,
-            "encoded_s": encoded_s,
-            "progress_frac": progress_frac,
-            "enc_bytes": enc_bytes,
-            "bytes_per_sec": bytes_per_sec,
-            "projected_bytes": projected_bytes,
-        }
-        self._projection_cache = proj
-        return proj
+        """Sum enc_*.mkv bytes + project the final output size. Thin delegate
+        to size_projection.compute_projection — kept thin to honor the
+        500-line module cap. The projection cache and every input still live
+        on this instance; see that module for the math + returned keys."""
+        from . import size_projection
+        return size_projection.compute_projection(self)
 
     def check_choke(self) -> Optional[tuple[int, str]]:
         """Delegate to choke_detection.check_choke — kept thin to honor the
@@ -438,38 +407,11 @@ class ParallelDisplay:
         return choke_detection.check_choke(self)
 
     def check_threshold(self) -> None:
-        """Project final output size from work-so-far and abort if it exceeds
-        the user's threshold. Only runs once >=5% of total source has been
-        encoded — earlier than that the estimate is noisy."""
-        if not self.max_output_bytes or not self.workdir or self.abort_event.is_set():
-            return
-
-        proj = self._compute_projection()
-        estimated_total = proj["projected_bytes"]
-        if estimated_total is None:           # too early (or no bytes yet)
-            return
-        if estimated_total <= self.max_output_bytes:
-            return
-
-        # Threshold exceeded — flag abort, kill running ffmpegs.
-        progress = proj["progress_frac"]
-        est_mb = estimated_total / (1024 * 1024)
-        thr_mb = self.max_output_bytes / (1024 * 1024)
-        pct_of_src = (estimated_total / self.source_bytes * 100) if self.source_bytes else 0
-        thr_pct = (self.max_output_bytes / self.source_bytes * 100) if self.source_bytes else 0
-        self.abort_reason = (
-            f"Estimated output {est_mb:.1f} MB ({pct_of_src:.1f}% of source) "
-            f"exceeds threshold {thr_mb:.1f} MB ({thr_pct:.1f}%). "
-            f"Stopped at {progress*100:.1f}% overall progress."
-        )
-        self.abort_event.set()
-        with self.lock:
-            procs = list(self.active_procs.values())
-        for proc in procs:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+        """Project output size and abort the encode if it exceeds the user's
+        threshold. Thin delegate to size_projection.check_threshold — kept
+        thin to honor the 500-line module cap; see that module."""
+        from . import size_projection
+        return size_projection.check_threshold(self)
 
     # --- rendering (called from a single render thread) ---
 
@@ -480,6 +422,10 @@ class ParallelDisplay:
                 events_now.append(self.events.get_nowait())
             except queue.Empty:
                 break
+
+        if not self._is_tty:
+            self._render_plain(events_now)
+            return
 
         if self.printed_live:
             # Move cursor up by the size of the block we drew last time:
@@ -523,3 +469,20 @@ class ParallelDisplay:
         sys.stdout.write("\033[K" + render.render_help(HAS_KEY_INPUT) + "\n")
         sys.stdout.flush()
         self.printed_live = True
+
+    def _render_plain(self, events_now: list[str]) -> None:
+        """Headless render: no ANSI in-place redraw (it corrupts logs/journals).
+        Emit new events as plain appended lines, plus a throttled one-line
+        progress summary so a long encode still shows life in the log."""
+        for evt in events_now:
+            print(evt)
+        now = time.monotonic()
+        if now - self._last_plain_summary >= self._plain_summary_interval_s:
+            self._last_plain_summary = now
+            with self.lock:
+                completed_now = self.completed
+            proj = self._compute_projection()
+            overall_done = self.already + completed_now
+            print(f"  progress: {overall_done}/{self.total} chunks done, "
+                  f"{min(100.0, proj['progress_frac'] * 100):.1f}% overall",
+                  flush=True)

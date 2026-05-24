@@ -35,8 +35,12 @@ def format_quality_summary(scores: dict) -> str:
     mode = scores.get("sampling_mode", "?")
     lines = [f"  Quality vs source ({mode}, sampled {n} frames):"]
     if vmaf is not None:
-        worst = f"worst frame: {vmaf_min:.1f}" if vmaf_min is not None else "worst: ?"
-        lines.append(f"    VMAF:  {vmaf:6.2f}  |  {worst:>18s}  →  {_grade(vmaf)}")
+        lines.append(f"    VMAF mean:  {vmaf:6.2f}  →  {_grade(vmaf)}")
+        if vmaf_min is not None:
+            # The worst-frame floor is what an archival "is it safe to delete
+            # the source?" decision hinges on — grade it on its own, not just
+            # the mean.
+            lines.append(f"    VMAF worst: {vmaf_min:6.2f}  →  {_grade(vmaf_min)}")
     if psnr is not None:
         lines.append(f"    PSNR:  {psnr:6.2f} dB                  (>40 excellent, 30-40 good, <30 poor)")
     if ssim is not None:

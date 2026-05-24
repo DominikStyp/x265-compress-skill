@@ -3,6 +3,85 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] — 2026-05-24
+
+Robustness pass from a multi-perspective audit: correctness fixes in the
+parallel encoder, headless/CI-friendly output, richer queue observability,
+and broader installer coverage. The simple default path (`python
+compress.py video.mp4`) is unchanged.
+
+### Added
+- **Headless / non-tty output.** The parallel live display and the serial
+  progress bar now detect when stdout isn't a terminal (piped to a log,
+  `nohup`, `systemd`, CI) and emit plain, log-friendly lines instead of
+  ANSI cursor-control / carriage-return spam. The interactive terminal
+  experience is unchanged.
+- **`run_queue.py --json-status <path>`** — append one NDJSON record per
+  finished job (`{input, status, output, input_bytes, output_bytes,
+  elapsed_seconds, vmaf_mean}`) for fleet monitoring; `tail -f`-able, and
+  kept off stdout so the human summary stays clean.
+- **Generated-script preflight guard.** The `.bat` / `.sh` now verify
+  ffmpeg and Python are on PATH and fail with a readable message instead
+  of a vanishing window or `'python' is not recognized`.
+- **Archival-confidence reporting.** The success summary states the source
+  is left untouched and, when VMAF ≥ 95, that it's safe to delete the
+  original by hand; the VMAF worst-frame now carries its own quality grade
+  (the floor matters most when deciding to delete an original).
+- **First unit-test suite** under `tests/` (stdlib `unittest`, no new
+  dependencies) covering the fixes and logic changes below.
+- **Docs**: the zero-flag `python compress.py video.mp4` simplest form
+  (README); CRF-17 archival rationale and an "avoid VideoToolbox for
+  archival" note (`references/x265-tuning.md`); `systemd
+  KillMode=control-group` for orphan-free kills; an Apple-Silicon
+  unified-memory note on the 4K parallel cap; queue resume + `nohup` /
+  `tmux` / `systemd-run` guidance.
+
+### Changed
+- **`run_queue.py` aggregate exit code** now distinguishes three outcomes:
+  `0` = all jobs clean, `1` = at least one real failure, `2` = no hard
+  failure but a job needs attention (size-guard abort, awaiting chunk fix,
+  missing input, corrupt source). Previously a threshold-abort reported `0`
+  (looked clean) and everything else collapsed to `1`. **Scripts that
+  branch on the queue exit code should review the new mapping** (documented
+  in `docs/AGENT_QUEUE_RECIPES.md`).
+- **`compress.py`** now warns (stderr) when an archival CRF (≤ 18) is paired
+  with `--max-size-percent` — a combination that often stops the encode
+  early (exit 3) before finishing.
+- **Clearer error messages** for missing ffprobe (per-OS install command +
+  "restart your shell"), a bad/missing input path (folder-vs-typo hint),
+  and the size-guard abort (plain-English lead-in).
+- **Installer distro coverage** (`install.sh`): Fedora/RHEL enables RPM
+  Fusion (or falls back to `ffmpeg-free`) instead of failing `dnf install
+  ffmpeg`; Alpine also installs `bash` (the generated `.sh` needs it) and
+  surfaces the `community`-repo requirement; the dnf Python hint points at
+  packages that actually exist. The SessionStart hook prints the RPM Fusion
+  note too.
+- **Generated `.sh`** resolves `python3`-or-`python` instead of hard-coding
+  `python3`, so it runs on systems that ship only `python`.
+- Size-projection / threshold logic extracted from `display.py` into
+  `encode_modules/size_projection.py` (keeps `display.py` under the
+  500-line module cap; behavior identical).
+
+### Fixed
+- **Choked-chunk partial encodes are no longer deleted.** `skipped_collector`
+  now quarantines a choked chunk's `enc_*.part.mkv` (renames it aside)
+  instead of unlinking it, matching the never-delete-encoded-bytes rule the
+  rest of the pipeline already follows. (The old "delete so resume doesn't
+  reuse it" rationale didn't hold — resume keys off the final `.mkv`, and
+  the re-encode path already quarantines stale parts.)
+- **Abort race in the parallel encoder.** An ffmpeg launched in the brief
+  window after a threshold/choke abort fired could escape the terminate
+  sweep and run to completion unsupervised. `register_proc` now refuses and
+  terminates a process started once the abort flag is set.
+- **A render-thread crash no longer disables the safety guards.** An
+  unexpected exception in the live-render tick silently killed the
+  size-guard (`check_threshold`) and choke-detector (`check_choke`) along
+  with the display; the tick is now guarded and the error surfaced to the
+  event log.
+- **`HistoryRecorder.record_chunk_elapsed`** holds a lock while mutating
+  shared state (defensive; consistent with the codebase's
+  lock-all-shared-state discipline).
+
 ## [1.1.0] — 2026-05-23
 
 ### Added

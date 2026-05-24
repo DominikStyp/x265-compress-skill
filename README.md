@@ -151,6 +151,17 @@ stay with the videos. A fresh install picks up where you left off.
 
 ## Quick start
 
+**Simplest form** — auto-picks CRF, preset, parallelism, and pixel format;
+every flag is optional. Just point it at a file:
+
+```bash
+python compress.py "input.mp4"
+```
+
+That writes a one-shot encoder script next to the source; run it to encode.
+Add `--resumable` for long encodes you might interrupt (chunked + re-runnable).
+The examples below show the common overrides.
+
 Single file (Windows):
 
 ```powershell
@@ -234,4 +245,6 @@ else in the codebase changes.
 Known gap on POSIX: a `kill -9` of the parent Python skips signal handlers
 and will orphan in-flight ffmpeg children. Win32 Job Objects survive that;
 POSIX has no exact equivalent. Doesn't affect Ctrl+C, normal exits, or
-SIGTERM — only the hard-kill case.
+SIGTERM — only the hard-kill case. Running under systemd closes even that
+gap: put the encode in a unit with `KillMode=control-group` and the cgroup
+reaps any orphaned ffmpeg when the service stops.

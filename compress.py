@@ -127,12 +127,29 @@ def _resolve_segment_seconds(args: argparse.Namespace, duration_sec: float) -> i
     return 60  # source has no duration metadata — fall back to 1 min chunks
 
 
+def _archival_size_guard_warning(crf: int,
+                                max_size_percent: float | None) -> str | None:
+    """Warn when a near-lossless/archival CRF is paired with a size guard:
+    such encodes barely shrink and frequently exceed --max-size-percent,
+    stopping early (exit 3) before finishing. Returns the message, or None."""
+    if max_size_percent is not None and crf <= 18:
+        return (f"WARNING: CRF {crf} targets archival / near-lossless quality, "
+                f"which often exceeds --max-size-percent {max_size_percent:g}% "
+                f"and stops the encode early (exit 3) before it finishes. For "
+                f"archival, drop --max-size-percent; otherwise raise the CRF.")
+    return None
+
+
 def main() -> int:
     args = _build_arg_parser().parse_args()
 
     source_path = Path(args.input).resolve()
     if not source_path.is_file():
-        sys.exit(f"ERROR: not a file: {source_path}")
+        hint = ("That's a folder — point me at a video file inside it"
+                if source_path.is_dir() else
+                "Check the path is spelled correctly, and wrap it in quotes "
+                "if it contains spaces")
+        sys.exit(f"ERROR: not a file: {source_path}\n       {hint}.")
 
     info = analyse(source_path)
     plan = plan_encode(
@@ -151,6 +168,12 @@ def main() -> int:
     max_output_bytes: int | None = None
     if args.max_size_percent is not None and source_path.is_file():
         max_output_bytes = int(source_path.stat().st_size * args.max_size_percent / 100)
+
+    if args.resumable:
+        archival_warning = _archival_size_guard_warning(
+            plan.crf, args.max_size_percent)
+        if archival_warning:
+            print(archival_warning, file=sys.stderr)
 
     write_script(
         info, plan, source_path,

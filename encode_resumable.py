@@ -159,7 +159,7 @@ def main() -> int:
 
     ensure_not_source(workdir)
     cleanup(workdir)
-    print_summary(src, dst)
+    print_summary(src, dst, quality_scores)
 
     if not args.no_report:
         write_single_file_report(

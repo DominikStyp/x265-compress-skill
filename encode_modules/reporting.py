@@ -125,10 +125,15 @@ def write_single_file_report(src: Path, dst: Path, *,
         print(f"WARNING: failed to write report: {e}", file=sys.stderr)
 
 
-def print_summary(src: Path, dst: Path) -> None:
+def print_summary(src: Path, dst: Path,
+                  quality_scores: dict | None = None) -> None:
     """One-shot summary block at the end of a successful encode. Prints
     input MB, output MB, savings — nothing more (the markdown report and
-    history JSONL carry the full detail)."""
+    history JSONL carry the full detail).
+
+    When a transparent VMAF (>=95) is available, also reassures the user the
+    source is untouched and that deleting it by hand is safe. The tool NEVER
+    deletes the source itself — only the user does."""
     in_mb = src.stat().st_size / (1024 * 1024)
     out_mb = dst.stat().st_size / (1024 * 1024)
     saved_pct = (in_mb - out_mb) / in_mb * 100 if in_mb else 0
@@ -137,3 +142,8 @@ def print_summary(src: Path, dst: Path) -> None:
     print(f"    Input :  {in_mb:8.1f} MB")
     print(f"    Output:  {out_mb:8.1f} MB")
     print(f"    Saved :  {saved_pct:8.1f} %  ({in_mb - out_mb:.1f} MB)")
+    vmaf = (quality_scores or {}).get("vmaf_mean")
+    if vmaf is not None and vmaf >= 95:
+        print(f"    Source untouched at: {src}")
+        print(f"    VMAF {vmaf:.1f} (visually transparent) — safe to delete "
+              f"the original yourself.")

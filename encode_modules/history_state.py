@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import sys
+import threading
 from pathlib import Path
 
 import history as _hist
@@ -44,6 +45,15 @@ class HistoryRecorder:
     def __init__(self) -> None:
         self.current: dict | None = None
         self.written: bool = False
+        # Guards record_chunk_elapsed, the one method N worker threads call
+        # concurrently. Defensive only: each call writes a distinct key, so
+        # it's already safe under CPython's GIL and under PEP 703
+        # free-threading. The lock keeps this class consistent with the
+        # codebase's lock-all-shared-mutable-state discipline (cf.
+        # ParallelDisplay) and stays correct if the update ever grows
+        # non-atomic. init/mark_status/finalize run single-threaded (before
+        # workers start / after they join), so they don't need it.
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -87,10 +97,11 @@ class HistoryRecorder:
 
     def record_chunk_elapsed(self, chunk_name: str, elapsed_s: float) -> None:
         """Stash one chunk's wall-clock encode time. Called the instant a
-        chunk's .part.mkv renames to .mkv (serial and parallel paths).
-        No-op if `init()` failed."""
-        if self.current is not None:
-            self.current.setdefault("chunk_elapsed", {})[chunk_name] = elapsed_s
+        chunk's .part.mkv renames to .mkv (serial and parallel paths), from
+        any worker thread. No-op if `init()` failed."""
+        with self._lock:
+            if self.current is not None:
+                self.current.setdefault("chunk_elapsed", {})[chunk_name] = elapsed_s
 
     def mark_status(self, status: str, **extra) -> None:
         """Set the outcome status on the in-progress record. Used by exit

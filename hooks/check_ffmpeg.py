@@ -71,7 +71,7 @@ def _try_install_macos() -> bool:
         # If brew was at /opt/homebrew/bin but not on PATH, the just-installed
         # ffmpeg lives in the same prefix — and is also off-PATH for this
         # session. Tell the user to refresh.
-        if not shutil.which("ffmpeg"):
+        if not have_ffmpeg():
             _emit("NOTE: ffmpeg is installed but its directory isn't on PATH "
                   "yet. Add `eval \"$(/opt/homebrew/bin/brew shellenv)\"` to "
                   "your ~/.zprofile, then restart Claude Code.")
@@ -120,7 +120,8 @@ def _print_linux_instructions() -> None:
     _emit("ffmpeg not found. Install with one of:")
     managers = [
         ("apt-get", f"{sudo}apt install ffmpeg"),           # Debian/Ubuntu
-        ("dnf",     f"{sudo}dnf install ffmpeg"),           # Fedora/RHEL
+        ("dnf",     f"{sudo}dnf install ffmpeg   "
+                    "(Fedora/RHEL needs RPM Fusion: see rpmfusion.org/Configuration)"),
         ("pacman",  f"{sudo}pacman -S ffmpeg"),             # Arch
         ("zypper",  f"{sudo}zypper install ffmpeg"),        # openSUSE
         ("apk",     f"{sudo}apk add ffmpeg"),               # Alpine

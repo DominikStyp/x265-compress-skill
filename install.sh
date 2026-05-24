@@ -148,7 +148,8 @@ if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 9 ]; };
                 echo "    Or upgrade to Ubuntu 22.04+ which ships Python 3.10+,"
                 echo "    or use pyenv (https://github.com/pyenv/pyenv) for per-user Python versions."
             elif command -v dnf >/dev/null 2>&1; then
-                echo "    Install a newer Python: ${SUDO}dnf install -y python3.11"
+                echo "    Install a newer Python: ${SUDO}dnf install -y python3.12"
+                echo "      (or python3.11 — whichever your repo provides; on Fedora plain python3 is already 3.10+)"
             elif command -v pacman >/dev/null 2>&1; then
                 echo "    Install: ${SUDO}pacman -S python   (Arch ships the latest already)"
             fi ;;
@@ -182,7 +183,7 @@ install_ffmpeg() {
                 "$BREW" install ffmpeg
                 # Pull brew's bin dir onto PATH for the rest of this script
                 # so the post-install ffmpeg -version check finds the binary.
-                if ! command -v ffmpeg >/dev/null 2>&1; then
+                if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
                     eval "$("$BREW" shellenv)" 2>/dev/null || true
                 fi
             else
@@ -195,7 +196,21 @@ install_ffmpeg() {
                 ${SUDO}apt-get update && ${SUDO}apt-get install -y ffmpeg
             elif command -v dnf >/dev/null 2>&1; then
                 info "Installing ffmpeg via dnf..."
-                ${SUDO}dnf install -y ffmpeg
+                # Fedora/RHEL main repos carry only the stripped `ffmpeg-free`;
+                # the full ffmpeg lives in RPM Fusion. Try the full build,
+                # enabling RPM Fusion on Fedora if the first attempt fails, and
+                # fall back to ffmpeg-free so the install still succeeds where
+                # RPM Fusion can't be reached.
+                if ! ${SUDO}dnf install -y ffmpeg >/dev/null 2>&1; then
+                    fedora_ver="$(rpm -E %fedora 2>/dev/null || true)"
+                    case "$fedora_ver" in
+                        ''|*[!0-9]*) : ;;  # not a clean Fedora release — skip RPM Fusion
+                        *) ${SUDO}dnf install -y \
+                             "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-${fedora_ver}.noarch.rpm" \
+                             >/dev/null 2>&1 || true ;;
+                    esac
+                    ${SUDO}dnf install -y ffmpeg || ${SUDO}dnf install -y ffmpeg-free
+                fi
             elif command -v pacman >/dev/null 2>&1; then
                 info "Installing ffmpeg via pacman..."
                 ${SUDO}pacman -S --noconfirm ffmpeg
@@ -204,7 +219,14 @@ install_ffmpeg() {
                 ${SUDO}zypper --non-interactive install ffmpeg
             elif command -v apk >/dev/null 2>&1; then
                 info "Installing ffmpeg via apk..."
-                ${SUDO}apk add --no-cache ffmpeg
+                # ffmpeg is in Alpine's 'community' repo (not 'main'), and bash
+                # isn't in the base image — the generated .sh needs it
+                # (PIPESTATUS, read -n1). --no-cache fetches a fresh index.
+                if ! ${SUDO}apk add --no-cache ffmpeg bash; then
+                    err "apk could not install ffmpeg+bash. On minimal Alpine, enable the 'community' repo:"
+                    echo "    uncomment the .../community line in /etc/apk/repositories, then re-run."
+                    exit 1
+                fi
             else
                 err "No supported package manager (apt/dnf/pacman/zypper/apk). Install ffmpeg manually."
                 exit 1

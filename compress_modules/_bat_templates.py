@@ -17,6 +17,12 @@ RESUMABLE_BAT_TEMPLATE = """@echo off
 chcp 65001 >nul
 title x265 compress (resumable): {base_title}
 
+REM Preflight: fail with a readable message (not a vanishing window) if the
+REM tools aren't on PATH yet — e.g. this .bat was double-clicked from a shell
+REM opened before ffmpeg/Python was installed.
+where ffmpeg >nul 2>nul || goto _NODEP_FFMPEG
+where python >nul 2>nul || goto _NODEP_PYTHON
+
 set "_SKILL_IN={input_path}"
 set "_SKILL_OUT={output_path}"
 set "_SKILL_WORKER={resumable_script}"
@@ -57,12 +63,28 @@ echo === Failed or interrupted (exit %ENCODE_RC%). Re-run this .bat to resume. =
 :END
 {pause_line}
 exit /b %ENCODE_RC%
+
+:_NODEP_FFMPEG
+echo ERROR: ffmpeg not found on PATH. Install ffmpeg, then reopen this window.
+{pause_line}
+exit /b 127
+
+:_NODEP_PYTHON
+echo ERROR: python not found on PATH. Install Python 3.9+, then reopen this window.
+{pause_line}
+exit /b 127
 """
 
 
 BAT_TEMPLATE = """@echo off
 chcp 65001 >nul
 title x265 compress: {base}
+
+REM Preflight: fail with a readable message (not a vanishing window) if the
+REM tools aren't on PATH yet — e.g. this .bat was double-clicked from a shell
+REM opened before ffmpeg/Python was installed.
+where ffmpeg >nul 2>nul || goto _NODEP_FFMPEG
+where python >nul 2>nul || goto _NODEP_PYTHON
 
 REM Paths are stashed in env vars so '(', ')', '!', '&', '^' in filenames
 REM survive cmd / PowerShell parsing without per-char escaping.
@@ -113,4 +135,14 @@ echo === Failed with exit code %ENCODE_RC% ===
 :END
 {pause_line}
 exit /b %ENCODE_RC%
+
+:_NODEP_FFMPEG
+echo ERROR: ffmpeg not found on PATH. Install ffmpeg, then reopen this window.
+{pause_line}
+exit /b 127
+
+:_NODEP_PYTHON
+echo ERROR: python not found on PATH. Install Python 3.9+, then reopen this window.
+{pause_line}
+exit /b 127
 """

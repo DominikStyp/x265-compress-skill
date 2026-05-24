@@ -25,6 +25,22 @@ RESUMABLE_SH_TEMPLATE = """#!/usr/bin/env bash
 # x265 compress (resumable): {base}
 set +e
 
+# Preflight: the encoder needs ffmpeg; the resumable worker needs Python.
+# Resolve python3-or-python (some systems ship only `python`) and fail with a
+# clear message instead of a cryptic "command not found" if this terminal was
+# opened before the tools were installed.
+PY="$(command -v python3 || command -v python)"
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    echo "ERROR: ffmpeg not found on PATH. Install ffmpeg, then reopen this terminal." >&2
+    {pause_line}
+    exit 127
+fi
+if [ -z "${{PY}}" ]; then
+    echo "ERROR: python3/python not found on PATH. Install Python 3.9+, then reopen this terminal." >&2
+    {pause_line}
+    exit 127
+fi
+
 _SKILL_IN={input_path}
 _SKILL_OUT={output_path}
 _SKILL_WORKER={resumable_script}
@@ -46,7 +62,7 @@ echo "Size guard: {threshold_label}"
 echo "          If killed (or laptop rebooted), re-run this .sh to resume."
 echo ""
 
-python3 -u "${{_SKILL_WORKER}}" \\
+"${{PY}}" -u "${{_SKILL_WORKER}}" \\
   --input "${{_SKILL_IN}}" \\
   --output "${{_SKILL_OUT}}" \\
   --workdir "${{_SKILL_WORKDIR}}" \\
@@ -70,6 +86,22 @@ exit ${{ENCODE_RC}}
 SH_TEMPLATE = """#!/usr/bin/env bash
 # x265 compress: {base}
 set +e
+
+# Preflight: this script needs ffmpeg and Python (the progress reader).
+# Resolve python3-or-python (some systems ship only `python`) and fail with a
+# clear message instead of a cryptic "command not found" if this terminal was
+# opened before the tools were installed.
+PY="$(command -v python3 || command -v python)"
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    echo "ERROR: ffmpeg not found on PATH. Install ffmpeg, then reopen this terminal." >&2
+    {pause_line}
+    exit 127
+fi
+if [ -z "${{PY}}" ]; then
+    echo "ERROR: python3/python not found on PATH. Install Python 3.9+, then reopen this terminal." >&2
+    {pause_line}
+    exit 127
+fi
 
 _SKILL_IN={input_path}
 _SKILL_OUT={output_path}
@@ -105,7 +137,7 @@ ffmpeg -hide_banner -loglevel error -nostats -progress - -y \\
   -pix_fmt {pix_fmt_out} \\
   -c:a copy \\
   -c:s copy \\
-  "${{_SKILL_OUT}}" | python3 -u "${{_SKILL_PROGRESS}}" --duration {duration}
+  "${{_SKILL_OUT}}" | "${{PY}}" -u "${{_SKILL_PROGRESS}}" --duration {duration}
 
 # In a pipeline, $? is the LAST command's exit. We want ffmpeg's, which is
 # the first element of PIPESTATUS.

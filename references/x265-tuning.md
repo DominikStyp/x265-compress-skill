@@ -26,6 +26,8 @@ The defaults err on the side of (1)-(3). If the user wants more aggressive compr
 
 x265 source: clamp to CRF 22 minimum. Re-encoding HEVC → HEVC at the same CRF just bleeds quality with little size benefit.
 
+**Archival / "visually lossless" override (CRF 17).** The auto-picker floors at CRF 18 — already visually lossless for normal viewing, so it never spends bits going lower on its own. For an archive you intend to keep (and maybe delete the source against later), drop to `--crf 17 --preset slower` by hand: CRF 17 is effectively transparent (VMAF typically ≥ 96) for a modest size cost over 18. This is the value the SKILL.md override table and `docs/AGENT_QUEUE_RECIPES.md` Recipe 4 ("visually lossless archival") use.
+
 ## The base `-x265-params` set
 
 ```
@@ -109,6 +111,6 @@ HLG sources work without extra metadata (HLG is self-describing).
 ## What we are NOT doing and why
 
 - **No two-pass.** CRF is rate-control by quality, which is what "no quality loss" actually means. Two-pass targets a bitrate, which is the wrong abstraction for this user's stated goal.
-- **No GPU encoding (NVENC, QSV, AMF).** GPU HEVC encoders are 3-5× faster but produce noticeably worse quality at the same bitrate. The user explicitly asked for CPU x265.
+- **No GPU/ASIC encoding (NVENC, QSV, AMF, Apple VideoToolbox).** Hardware HEVC encoders are 3-5× faster and far lower-power, but produce noticeably worse quality at the same bitrate and aren't CRF-true. They're the right call for *playback* transcodes — and the wrong call for an archive you may delete originals against. On Apple Silicon, `hevc_videotoolbox` is especially tempting for its speed/efficiency; resist it for archival and keep the software libx265 default. The user explicitly asked for CPU x265.
 - **No denoising, no scaling, no deinterlacing.** Out of scope — the user wants compression, not a filter chain. If a specific source needs `-vf yadif` (deinterlace) or `-vf hqdn3d` (denoise), add it manually after generation.
 - **No `--tune psnr` or `--tune ssim`.** Both *lower* visual quality at the same CRF; they exist for benchmark cheating, not real viewing.

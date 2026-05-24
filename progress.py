@@ -50,6 +50,11 @@ def main() -> int:
                     help="Source duration in seconds (from ffprobe).")
     args = ap.parse_args()
     total = max(0.001, args.duration)
+    # In-place \r updates are for a terminal; piped to a log/CI they become
+    # carriage-return spam. Non-tty falls back to throttled newline lines.
+    is_tty = sys.stdout.isatty()
+    last_emit = 0.0
+    last_pct = -100.0
 
     state: dict[str, str] = {}
     saw_end = False
@@ -80,8 +85,16 @@ def main() -> int:
                 speed = 0.0
 
             eta_s = (total - out_time_s) / speed if speed > 0 else 0.0
-            sys.stdout.write(render(pct, out_time_s, total, fps, speed_raw, eta_s))
-            sys.stdout.flush()
+            line = render(pct, out_time_s, total, fps, speed_raw, eta_s)
+            if is_tty:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+            elif (val == "end" or pct - last_pct >= 5.0
+                    or time.monotonic() - last_emit >= 30.0):
+                # Plain, newline-terminated, throttled — readable in a log.
+                last_pct, last_emit = pct, time.monotonic()
+                sys.stdout.write(line.replace("\r", "").rstrip() + "\n")
+                sys.stdout.flush()
 
             if val == "end":
                 saw_end = True
@@ -89,8 +102,10 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
 
-    sys.stdout.write("\n")
-    sys.stdout.flush()
+    if is_tty:
+        # Terminate the in-place bar line. Non-tty already emits full lines.
+        sys.stdout.write("\n")
+        sys.stdout.flush()
     return 0 if saw_end else 1
 
 

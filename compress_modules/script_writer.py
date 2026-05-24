@@ -197,7 +197,7 @@ def _build_legacy_report_call_posix(plan: EncodePlan,
                if max_size_percent is not None else "")
     return (
         '\n    _ELAPSED=$(( $(date +%s) - _START_TS ))\n'
-        f'    python3 -u "${{_SKILL_REPORT}}" single "${{_SKILL_REPORT_MD}}" '
+        f'    "${{PY}}" -u "${{_SKILL_REPORT}}" single "${{_SKILL_REPORT_MD}}" '
         f'"${{_SKILL_IN}}" "${{_SKILL_OUT}}" --crf {plan.crf} '
         f'--preset {plan.preset}{mx_part} '
         f'--elapsed-sec ${{_ELAPSED}} --status ok'

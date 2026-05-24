@@ -143,19 +143,42 @@ def _record_worker_exception(slot: int, chunk: Path,
         ctx.results.append((chunk, 1, 0.0, str(ex)[-400:]))
 
 
+def _render_tick(display: ParallelDisplay) -> None:
+    """One periodic tick: size-threshold projection, choke detection, redraw.
+
+    Wrapped so a bug in ANY of the three can't propagate out of the render
+    thread. That thread is also where check_threshold (the size guard) and
+    check_choke (the choke killer) run — so a render thread that dies on an
+    unexpected exception silently disables BOTH safety mechanisms, not just
+    the live display. The failure is surfaced via the events log instead."""
+    try:
+        display.check_threshold()
+        display.check_choke()
+        display.render()
+    except Exception:
+        import traceback
+        display.events.put(
+            "  ! render tick failed (continuing):\n" + traceback.format_exc())
+
+
 def _render_loop(display: ParallelDisplay,
                 stop_render: threading.Event) -> None:
     """Periodic threshold-projection + choke-detection + redraw. Wakes on
     a keypress via display.input_event for instant feedback; otherwise
     ticks at 2 Hz (every 500 ms). The final paint after stop_render is set
-    keeps the screen showing the final state until shutdown completes."""
+    keeps the screen showing the final state until shutdown completes.
+
+    The 0.5 s wait runs every iteration even when a tick fails, so a
+    persistent render error can't turn the loop into a busy-spin."""
     while not stop_render.is_set():
-        display.check_threshold()
-        display.check_choke()
-        display.render()
+        _render_tick(display)
         display.input_event.wait(0.5)
         display.input_event.clear()
-    display.render()
+    # Final paint — also guarded so a render bug can't crash shutdown.
+    try:
+        display.render()
+    except Exception:
+        pass
 
 
 def encode_chunks_parallel(chunks: list[Path], workdir: Path, *,

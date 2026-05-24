@@ -198,6 +198,8 @@ Effects on the rest of the pipeline:
 | ≥720p | **6** | ~12 rows; one instance leaves significant cores idle |
 | <720p (480p / SD) | **8** | ~8 rows; needs heavy stacking to saturate CPU |
 
+> **Apple Silicon:** the 4K → `1` cap matters even more on unified memory (shared with the GPU and the rest of the system). An M-series base config is often 16–24 GB, so a single 10-bit 4K x265 instance already claims a real share — don't raise `--parallel` for 4K on a Mac unless you have 32 GB+ and have watched the memory headroom.
+
 Override per-file with `--parallel N` (or `"parallel": N` in a queue JSON). In queue JSON you may also pass `"parallel": "auto"` explicitly, or omit the key entirely (same effect).
 
 Trade-offs:
@@ -387,6 +389,8 @@ For batch encoding of multiple files, write a JSON queue and feed it to the bund
 python "$env:USERPROFILE\.claude\plugins\x265-compress-skill\run_queue.py" "C:\path\to\queue.json"
 ```
 
+**Resuming + headless use.** A queue run resumes at two levels: re-running the same `queue.json` skips jobs whose output already exists, and within a job the chunk encoder picks up at the first missing chunk. So an interrupted run (SSH drop, reboot, `Ctrl+C`) just needs the same command again. For fire-and-forget over SSH, detach it — `nohup python3 run_queue.py queue.json > queue.log 2>&1 &`, or `tmux` / `systemd-run --user`. Under systemd use `KillMode=control-group` so the unit reaps ffmpeg children cleanly.
+
 ### Queue JSON schema
 
 Two shapes are accepted. Flat list (no shared defaults):
@@ -461,7 +465,7 @@ Notes:
 - **Skip existing outputs** by default (override with `--no-skip-existing`).
 - **Continue on per-job failure** by default (override with `--stop-on-failure`).
 - **Threshold-aborts never stop the queue** regardless of `--stop-on-failure` — the whole point of the size guard is "this one isn't worth keeping; move on".
-- **Final summary table** lists each job and its status: `ok`, `skipped-exists`, `skipped-not-found`, `stopped-threshold`, `pre-flight-failed`, `awaiting-chunk-fix`, `chunk-choked`, `failed-gen`, `failed-parse`, `failed-exit-<N>`. Queue exit code is non-zero only if at least one `failed-*` happened.
+- **Final summary table** lists each job and its status: `ok`, `skipped-exists`, `skipped-not-found`, `stopped-threshold`, `pre-flight-failed`, `awaiting-chunk-fix`, `chunk-choked`, `failed-gen`, `failed-parse`, `failed-exit-<N>`. Queue exit code: `0` = all clean, `1` = a real failure (`failed-*`), `2` = a job needs attention (`stopped-threshold`, `awaiting-chunk-fix`, `skipped-not-found`, `pre-flight-failed`, `chunk-choked`) — a hard failure outranks needs-attention. Pass `--json-status <path>` for an NDJSON per-job stream (machine-readable; stdout stays human-readable).
 - **Resumable inside a job** still works — if the queue is killed mid-job, re-run it and the in-progress job resumes from its last completed chunk; preceding jobs are skipped because their output already exists.
 
 ## Markdown reports

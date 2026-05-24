@@ -36,7 +36,12 @@ def run_ffprobe(path: Path) -> dict:
     Exits the process on any failure — the caller has nothing useful to do
     without source metadata."""
     if not shutil.which("ffprobe"):
-        sys.exit("ERROR: ffprobe not found on PATH. Install ffmpeg first.")
+        sys.exit(
+            "ERROR: ffprobe not found on PATH (it ships with ffmpeg).\n"
+            "       Install ffmpeg, then restart your shell so PATH updates:\n"
+            "         macOS:   brew install ffmpeg\n"
+            "         Windows: winget install Gyan.FFmpeg\n"
+            "         Linux:   sudo apt install ffmpeg  (or dnf/pacman/zypper/apk)")
     proc = subprocess.run(
         ["ffprobe", "-v", "error", "-print_format", "json",
          "-show_format", "-show_streams", str(path)],

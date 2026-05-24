@@ -5,6 +5,11 @@ Usage:
     python run_queue.py <queue.json>
     python run_queue.py <queue.json> --stop-on-failure
     python run_queue.py <queue.json> --no-skip-existing
+    python run_queue.py <queue.json> --json-status status.ndjson
+
+Exit code: 0 = all jobs clean, 1 = at least one real failure, 2 = no hard
+failure but a job needs attention (size-guard abort, chunks awaiting a
+manual fix, missing input, corrupt source).
 
 Live-reload: re-reads queue.json before every job, so edits to pending jobs
 or `defaults` apply at the next job boundary — no restart needed.
@@ -22,6 +27,7 @@ summary stats, aggregate-report writer dispatch.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -39,6 +45,10 @@ def _parse_args() -> argparse.Namespace:
                          "regardless of this flag.")
     ap.add_argument("--no-skip-existing", action="store_true",
                     help="Don't skip jobs whose final .mkv output already exists.")
+    ap.add_argument("--json-status", metavar="PATH", default=None,
+                    help="Append one NDJSON record per finished job to PATH "
+                         "(machine-readable; stdout stays human-readable). "
+                         "Tail it to watch a queue run live.")
     return ap.parse_args()
 
 
@@ -118,6 +128,65 @@ def _write_aggregate_reports(skill_dir: Path, queue_path: Path,
               file=sys.stderr)
 
 
+# Per-job status -> aggregate category for the process exit code. "clean":
+# nothing to do. "attention": the encode ran but left a state needing a human
+# decision. Anything else is treated as a real failure (fail-safe).
+_CLEAN_STATUSES = {"ok", "skipped-exists"}
+_ATTENTION_STATUSES = {
+    "stopped-threshold", "awaiting-chunk-fix", "skipped-not-found",
+    "pre-flight-failed", "chunk-choked",
+}
+
+
+def _aggregate_exit_code(job_reports: list[dict]) -> int:
+    """Map the run's per-job statuses to a process exit code so a fleet
+    runner can branch on $?:
+
+        0  every job clean (ok, or output already existed)
+        1  at least one real failure (compress.py crashed, bad output, ...)
+        2  no hard failure, but a job needs attention (size-guard abort,
+           chunks awaiting a manual fix, missing input, corrupt source)
+
+    A hard failure (1) outranks a needs-attention (2). Unknown statuses are
+    treated as failures so a new state surfaces loudly, not as 'clean'."""
+    has_failure = False
+    has_attention = False
+    for j in job_reports:
+        status = j.get("status", "")
+        if status in _CLEAN_STATUSES:
+            continue
+        if status in _ATTENTION_STATUSES:
+            has_attention = True
+        else:
+            has_failure = True
+    if has_failure:
+        return 1
+    if has_attention:
+        return 2
+    return 0
+
+
+def _emit_json_status(path, row: dict) -> None:
+    """Append one NDJSON record for a finished job so a fleet monitor can
+    `tail -f` the queue's progress. Kept off stdout (which stays human-
+    readable). Best-effort — a logging hiccup must never break the run."""
+    try:
+        rec = {
+            "input": row.get("input"),
+            "status": row.get("status"),
+            "output": row.get("output"),
+            "input_bytes": row.get("input_bytes"),
+            "output_bytes": row.get("output_bytes"),
+            "elapsed_seconds": row.get("elapsed_seconds"),
+            "vmaf_mean": row.get("vmaf_mean"),
+        }
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
+            fh.flush()
+    except Exception as e:
+        print(f"WARNING: --json-status write failed: {e}", file=sys.stderr)
+
+
 def main() -> int:
     args = _parse_args()
     queue_path = Path(args.queue_file).resolve()
@@ -130,6 +199,13 @@ def main() -> int:
         sys.exit(f"ERROR: compress.py missing at {compress_py}")
 
     print(f"Queue: live-reloading {queue_path} before each job.")
+    if args.json_status:
+        # Truncate up front so a re-run starts a clean per-run status stream.
+        try:
+            open(args.json_status, "w", encoding="utf-8").close()
+        except OSError as e:
+            sys.exit(f"ERROR: cannot write --json-status file "
+                     f"{args.json_status}: {e}")
 
     # `attempted_inputs` = jobs we've already started (by absolute resolved
     # path), so a job that already ran — ok, failed, threshold-aborted, or
@@ -184,6 +260,8 @@ def main() -> int:
         )
         if skip_row is not None:
             job_reports.append(skip_row)
+            if args.json_status:
+                _emit_json_status(args.json_status, skip_row)
             continue
 
         status, row = run_one_job(
@@ -191,16 +269,15 @@ def main() -> int:
             i=job_counter, n=len(seen_inputs),
         )
         job_reports.append(row)
+        if args.json_status:
+            _emit_json_status(args.json_status, row)
 
         if status.startswith("failed") and args.stop_on_failure:
             break
 
     _print_summary_table(job_reports)
     _write_aggregate_reports(skill_dir, queue_path, job_reports)
-
-    real_failures = sum(1 for j in job_reports
-                        if j["status"].startswith("failed"))
-    return 0 if not real_failures else 1
+    return _aggregate_exit_code(job_reports)
 
 
 if __name__ == "__main__":
