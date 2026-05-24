@@ -178,7 +178,9 @@ arguments. Best-effort — a slow or failing hook never stalls or aborts the enc
 > script leaks easily; if one ever lands in a shell history, a log, or a paste,
 > revoke it at **pushbullet.com → Settings → Access Tokens** and issue a new one.
 
-Point the hook at a small script (POSIX shown; Windows below):
+**Ready-made:** a stdlib-only, cross-platform version ships in
+[`examples/notify_pushbullet.py`](../examples/notify_pushbullet.py). Point the
+hook straight at it — no `curl`/`jq`, identical on Windows and POSIX:
 
 ```json
 {
@@ -186,13 +188,22 @@ Point the hook at a small script (POSIX shown; Windows below):
     "crf": 22,
     "parallel": "auto",
     "resumable": true,
-    "on_chunk_done": ["bash", "/home/me/notify-pushbullet.sh"]
+    "on_chunk_done": ["python3", "/path/to/examples/notify_pushbullet.py"]
   },
   "jobs": [
     {"input": "*.mkv"}
   ]
 }
 ```
+
+On Windows use `["python", "C:/path/to/examples/notify_pushbullet.py"]`. It reads
+`PUSHBULLET_TOKEN` (required) and `PUSHBULLET_DEVICE` (optional) from the
+environment, and pushes a note like `Chunk-07-Done, 7/10 (70.0%)` with the source
+filename as the body (`...-FAILED` for a chunk that produced no output).
+
+Prefer an inline shell hook instead of a separate file? Point `on_chunk_done` at
+one of these (`["bash","/home/me/notify-pushbullet.sh"]` on POSIX,
+`["pwsh","-File","C:/tools/notify-pushbullet.ps1"]` on Windows):
 
 `/home/me/notify-pushbullet.sh`:
 

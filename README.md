@@ -241,6 +241,7 @@ Minimal `queue.json`:
 | `encode_modules/` | Chunk worker, serial + parallel loops, live display, choke detection, VMAF, history, source guard |
 | `queue_modules/` | Job schema, queue I/O, per-job runner |
 | `references/` | x265 parameter rationale |
+| `examples/` | Copy-paste hook scripts (e.g. `notify_pushbullet.py` for `on_chunk_done`) |
 
 ## Platform support
 

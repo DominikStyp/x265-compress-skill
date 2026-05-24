@@ -3,6 +3,16 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.4.2] — 2026-05-24
+
+### Added
+- **`examples/notify_pushbullet.py`** — a ready-to-use, stdlib-only `on_chunk_done`
+  hook that pushes a Pushbullet note per finished chunk (cross-platform; no
+  `curl` / `jq` needed). The token and target device are read from the
+  `PUSHBULLET_TOKEN` / `PUSHBULLET_DEVICE` environment variables, never the file.
+  Queue recipe 8 and the README layout point to it; its payload builder is
+  unit-tested, including a guard that no secret literal is ever committed.
+
 ## [1.4.1] — 2026-05-24
 
 ### Documentation
