@@ -3,6 +3,29 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.2] — 2026-05-25
+
+### Fixed
+- **Long 4K outputs are no longer falsely quarantined as `damaged_*`.** The
+  final post-encode verification step (`_decode_check`) decodes every frame +
+  audio sample of the merged output, but used a flat **600 s** timeout. A
+  bit-perfect 32.7-min 4K HEVC encode whose honest low-priority decode legitimately
+  ran longer than 10 min hit that cap, was reported as `OUTPUT VERIFICATION
+  FAILED`, and got renamed `damaged_*` — despite being completely clean.
+  - The decode-walk timeout now **scales with the output's duration**
+    (`decode_walk_timeout_s` in `encode_modules/verify.py`): `6×` the file's
+    duration, with a `900 s` floor for short clips and a `4 h` ceiling. A healthy
+    decode runs several times faster than realtime, so the budget is only ever
+    reached by a genuine decoder *hang* (no progress at all) — not by slow
+    hardware or a long-but-honest file. The ceiling bounds the wasted wall-clock
+    if the decoder really has wedged.
+  - `verify_output` reuses the duration it already probed (no second `ffprobe`),
+    and the timeout message now names the cap and the file's duration so a real
+    hang is distinguishable from a too-tight budget.
+  - Genuine corruption is still caught immediately: `-xerror` fast-fails on hard
+    decode errors regardless of the timeout, so the data-safety invariant (never
+    silently accept a broken encode) is unchanged.
+
 ## [1.5.1] — 2026-05-25
 
 ### Fixed

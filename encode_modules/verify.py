@@ -19,6 +19,7 @@ duration drifted from their src counterpart.
 """
 from __future__ import annotations
 
+import math
 import subprocess
 import time
 from pathlib import Path
@@ -26,6 +27,38 @@ from pathlib import Path
 from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
 from .probes import fmt_dur, probe_duration, probe_full
+
+
+# The post-encode decode pass walks every frame + audio sample of the merged
+# output. Even at low priority a healthy HEVC decode runs several times faster
+# than realtime, so we budget a generous MULTIPLE of the output's own duration
+# rather than a flat wall-clock cap. The old flat 600 s silently failed long 4K
+# files whose honest decode legitimately needed more than 10 minutes — they got
+# renamed damaged_* despite being bit-clean. With a duration-scaled budget only
+# a genuine decoder *hang* (no progress at all) can now exhaust the timeout.
+DECODE_WALK_MIN_TIMEOUT_S = 900        # floor so short clips still get headroom
+DECODE_WALK_TIMEOUT_FACTOR = 6.0       # wall budget = 6x the output's duration
+DECODE_WALK_MAX_TIMEOUT_S = 4 * 3600   # ceiling: bound the waste on a TRUE hang
+
+
+def decode_walk_timeout_s(duration_s: float | None) -> int:
+    """Wall-clock budget for a full-file decode walk, scaled to the output's own
+    duration and clamped to [floor, ceiling].
+
+    Floor: a failed/zero probe (probe_duration returns 0.0 on any error) or a
+    tiny clip can never hand subprocess.run a sub-floor (or zero = "expire
+    immediately") value that would falsely flag every file.
+
+    Ceiling: a healthy decode runs several times faster than realtime, so the
+    only thing that ever *reaches* the budget is a genuine no-progress hang.
+    Without a ceiling a multi-hour source would arm a multi-hour (6x) hang wait;
+    4h is far above any honest decode yet bounds the wasted wall-clock when the
+    decoder really has wedged."""
+    if not duration_s or duration_s <= 0:
+        return DECODE_WALK_MIN_TIMEOUT_S
+    scaled = math.ceil(duration_s * DECODE_WALK_TIMEOUT_FACTOR)
+    return max(DECODE_WALK_MIN_TIMEOUT_S,
+               min(scaled, DECODE_WALK_MAX_TIMEOUT_S))
 
 
 def _run_decode_walk(path: Path, *,
@@ -146,18 +179,26 @@ def analyze_chunk_errors(chunk_path: Path, *,
     return result
 
 
-def _decode_check(path: Path) -> str | None:
+def _decode_check(path: Path, *, duration_s: float | None = None) -> str | None:
     """Decode every video frame and audio sample to /dev/null. Return None
     on a clean pass, or a short error description if anything failed.
 
     Catches the corruption classes structural ffprobe misses: mid-bitstream
     truncation, bad packet offsets at chunk boundaries, NAL units the decoder
-    can't reconstruct, audio frames with invalid headers."""
-    # Generous timeout (10 min) — full-file decode of a 30-min 4K mkv can
-    # take a few minutes on lower-end hardware.
-    r = _run_decode_walk(path, timeout_s=600, max_samples=4)
+    can't reconstruct, audio frames with invalid headers.
+
+    The timeout scales with the output's duration (see decode_walk_timeout_s)
+    so a long-but-honest 4K decode is never falsely quarantined — only a real
+    decoder hang exhausts the budget. `duration_s` lets the caller pass a
+    duration it already probed; None means probe it here."""
+    if duration_s is None:
+        duration_s = probe_duration(path)
+    timeout_s = decode_walk_timeout_s(duration_s)
+    r = _run_decode_walk(path, timeout_s=timeout_s, max_samples=4)
     if r["timed_out"]:
-        return f"decode walk timed out after {r['elapsed_seconds']}s"
+        return (f"decode walk timed out after {r['elapsed_seconds']}s "
+                f"(cap {timeout_s}s for a {fmt_dur(duration_s or 0)} output) — "
+                f"likely a decoder hang, not slow hardware")
     if r["decode_exit_code"] not in (0, None):
         tail = "; ".join(r["error_samples"])[:400]
         suffix = f": {tail}" if tail else ""
@@ -303,7 +344,10 @@ def verify_output(src: Path, dst: Path, *, duration_tol_sec: float = 2.0) -> lis
     # already found problems — the file is known broken, no need to spend
     # minutes confirming it.
     if not problems:
-        decode_err = _decode_check(dst)
+        # Reuse the duration already in dst_info — no second ffprobe — to size
+        # the decode-walk timeout to this output's length.
+        dst_dur = float(dst_info.get("format", {}).get("duration", 0) or 0)
+        decode_err = _decode_check(dst, duration_s=dst_dur or None)
         if decode_err:
             problems.append(f"decode pass failed: {decode_err}")
 
