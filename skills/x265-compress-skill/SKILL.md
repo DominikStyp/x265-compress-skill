@@ -457,6 +457,7 @@ Notes:
 - `chcp 65001` is required if any input filename in the queue contains non-ASCII characters.
 - Exit code is captured **before** `pause` and re-raised with `exit /b` **after** it, so outer runners (CI, schedulers, parent .bats) see the real result. `pause` itself always returns 0 and would mask failure.
 - If the queue file is named something other than `queue.json`, mirror that name in both the launcher's filename and the path it passes to `run_queue.py`.
+- The `\.claude\skills\x265-compress-skill\` segment must match where the skill is actually installed. It may instead live under `\.claude\plugins\x265-compress-skill\` (the installer default) — point the launcher at whichever directory contains `run_queue.py`. `%CLAUDE_PLUGIN_ROOT%` can't be used here because it isn't set when the user double-clicks the .bat.
 
 ### Behaviour
 

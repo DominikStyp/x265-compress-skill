@@ -93,6 +93,15 @@ Override the install location with `SKILL_DIR=/some/where` (POSIX) or
 `$env:SKILL_DIR="..."` (PowerShell). Default is
 `~/.claude/plugins/x265-compress-skill/`.
 
+> **Install location.** Two layouts are supported:
+> - `~/.claude/plugins/x265-compress-skill/` — the installer default (plugin install).
+> - `~/.claude/skills/x265-compress-skill/` — when dropped in as a user skill.
+>
+> Both work identically. The path examples below use `plugins/`; if your
+> copy lives under `skills/`, substitute that segment everywhere — including
+> in any generated `run_queue.bat` / invocation, which must point at the
+> directory the skill actually lives in.
+
 After install, restart Claude Code (or run `/skills` to refresh). The
 skill activates automatically via the `name:` / `description:`
 frontmatter in `SKILL.md` on prompts like *"compress this video"*,
@@ -114,12 +123,12 @@ plugin-update mechanism handles the pull.
 For users who installed via the curl/irm one-liner:
 
 ```bash
-# macOS / Linux
+# macOS / Linux  (use skills/ instead of plugins/ if installed there)
 cd ~/.claude/plugins/x265-compress-skill && git pull && bash install.sh
 ```
 
 ```powershell
-# Windows
+# Windows  (use skills\ instead of plugins\ if installed there)
 Set-Location "$env:USERPROFILE\.claude\plugins\x265-compress-skill"
 git pull
 & .\install.ps1 -Yes
@@ -145,9 +154,10 @@ next to your video files:
 | Queue aggregate report | `<queue_folder>/.tmp/<queue_stem>_report.md` |
 | Encoding history JSONL | `<video_folder>/encoding_history.jsonl` |
 
-`rm -rf ~/.claude/plugins/x265-compress-skill/` removes ONLY the code —
-your sidecars, reports, history, and any in-progress chunked workdirs
-stay with the videos. A fresh install picks up where you left off.
+`rm -rf ~/.claude/plugins/x265-compress-skill/` (or `.../skills/...` if
+installed there) removes ONLY the code — your sidecars, reports, history,
+and any in-progress chunked workdirs stay with the videos. A fresh install
+picks up where you left off.
 
 ## Quick start
 
