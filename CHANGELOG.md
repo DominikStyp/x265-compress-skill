@@ -3,6 +3,19 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.4.3] — 2026-05-24
+
+### Fixed
+- **Source filenames containing `%` no longer break the split phase.** ffmpeg's
+  `segment` muxer scans the *entire* output path for printf-style tokens, so a
+  source named e.g. `70% Hell` produced a chunk workdir like `.compress_70% Hell`
+  whose `% H` was read as an invalid conversion spec — ffmpeg rejected the
+  template ("Invalid segment filename template") and the encode failed before any
+  chunk was written (exit 234). The workdir portion of the segment template is now
+  escaped (`%` → `%%`) while the intended `src_%04d.mkv` pattern is preserved.
+  Only the ffmpeg argument is escaped — the on-disk workdir name (and thus the
+  `.split_done` / resume convention) is unchanged. Found on a real MacBook Pro run.
+
 ## [1.4.2] — 2026-05-24
 
 ### Added

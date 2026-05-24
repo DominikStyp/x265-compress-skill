@@ -39,7 +39,14 @@ def split_source(src: Path, workdir: Path, seg_sec: int) -> list[Path]:
         "-f", "segment",
         "-segment_time", str(seg_sec),
         "-reset_timestamps", "1",
-        str(workdir / "src_%04d.mkv"),
+        # ffmpeg's segment muxer parses the WHOLE output path for printf-style
+        # conversion tokens, not just the basename. Escape any literal % in the
+        # workdir (e.g. a source named "70% Hell") to %% so only the intended
+        # src_%04d.mkv pattern is treated as a format string — otherwise ffmpeg
+        # reads "% H" as an invalid spec and rejects the template (exit 234).
+        # Escaping only the argument (not the on-disk dir) keeps the
+        # .compress_<stem> / .split_done resume convention intact.
+        os.path.join(str(workdir).replace("%", "%%"), "src_%04d.mkv"),
     ]), **low_priority_popen_kwargs())
     if r.returncode != 0:
         sys.exit(f"ERROR: segmenter failed (exit {r.returncode})")
