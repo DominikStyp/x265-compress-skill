@@ -52,12 +52,15 @@ def _cmd_title_escape(s: str) -> str:
     return s.replace("^", "^^").replace("&", "^&").replace("%", "%%")
 
 
-def _bash_title_escape(s: str) -> str:
-    """Escape for embedding in a bash printf single-quoted format string.
-    Title goes into `printf '\\033]0;TITLE\\007'`; we just need to handle
-    embedded single quotes (close-escape-reopen) — every other character
-    is literal inside single quotes."""
-    return s.replace("'", "'\\''")
+def _cmd_set_escape(s: str) -> str:
+    """Escape a value embedded inside cmd `set "VAR=<value>"`. Inside the
+    double quotes, `&` `(` `)` `^` `!` are already literal — but `%` is NOT:
+    cmd expands `%VAR%` and STRIPS a lone `%` on the line before `set` runs, so
+    a path like `C:\\50%PATH%.mkv` would expand PATH (corrupting the path the
+    encoder actually runs on) and `70% Hell` would lose its `%`. Double every
+    `%` so cmd stores the literal. (`"` needs no handling — it can't occur in a
+    Windows path or filename.)"""
+    return s.replace("%", "%%")
 
 
 # --- on_chunk_done hook fragments ------------------------------------------
@@ -78,7 +81,9 @@ def _hook_fragments_win(tmp_dir: Path, stem: str,
     if not on_chunk_done:
         return "", ""
     sidecar = write_hook_sidecar(tmp_dir, stem, on_chunk_done)
-    return (f'\nset "_SKILL_HOOKS={sidecar}"',
+    # Sidecar path goes into `set "VAR=..."`, so double any `%` (the stem can
+    # contain one, e.g. ".compress_70% Hell.hooks.json").
+    return (f'\nset "_SKILL_HOOKS={_cmd_set_escape(str(sidecar))}"',
             ' ^\n  --hooks-config "%_SKILL_HOOKS%"')
 
 
@@ -139,8 +144,10 @@ def _win_substitutions(info: SourceInfo, plan: EncodePlan, source_path: Path,
         common,
         base=base,
         base_title=_cmd_title_escape(base),
-        input_path=str(source_path),
-        output_path=plan.output_path,
+        # Paths land in `set "VAR=..."` (and the done-echo), so `%` must be
+        # doubled — see _cmd_set_escape. Other meta-chars are literal there.
+        input_path=_cmd_set_escape(str(source_path)),
+        output_path=_cmd_set_escape(plan.output_path),
         # `%` escape for the cmd `echo` line that prints estimated_reduction.
         estimated_reduction=plan.estimated_reduction.replace("%", "%%"),
         pause_line="" if no_pause else "pause",
@@ -159,11 +166,13 @@ def _posix_substitutions(info: SourceInfo, plan: EncodePlan, source_path: Path,
     return dict(
         common,
         base=base,
-        base_title=_bash_title_escape(base),
+        # The title is passed to printf as a %s DATA argument (see the .sh
+        # template), so it just needs full single-quoting like any other value.
+        base_title=_sh_quote(base),
         input_path=_sh_quote(str(source_path)),
-        # plan.output_path is used both as a value (need quoting) and as
-        # a label in echo (just embed as bash literal, no quoting needed
-        # since it's inside the printf format which is single-quoted).
+        # plan.output_path is used both as a quoted variable value and as a
+        # label in a double-quoted echo; _sh_quote covers the value, and echo
+        # (unlike printf) treats `%` literally, so no extra escaping is needed.
         output_path=_sh_quote(plan.output_path),
         estimated_reduction=plan.estimated_reduction,
         pause_line=pause,
@@ -351,8 +360,8 @@ def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
         hooks_setup, hooks_flag = _hook_fragments_win(
             tmp_dir, source_path.stem, on_chunk_done)
         return bat_t.RESUMABLE_BAT_TEMPLATE.format(
-            resumable_script=str(skill_dir / "encode_resumable.py"),
-            workdir=str(workdir),
+            resumable_script=_cmd_set_escape(str(skill_dir / "encode_resumable.py")),
+            workdir=_cmd_set_escape(str(workdir)),
             segment_seconds=segment_seconds, parallel=parallel,
             parallel_label=parallel_label,
             extra_args=extra_args,
@@ -362,9 +371,9 @@ def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
             **common,
         )
     return bat_t.BAT_TEMPLATE.format(
-        progress_script=str(skill_dir / "progress.py"),
-        report_script=str(skill_dir / "report.py"),
-        report_md_path=str(report_md_path),
+        progress_script=_cmd_set_escape(str(skill_dir / "progress.py")),
+        report_script=_cmd_set_escape(str(skill_dir / "report.py")),
+        report_md_path=_cmd_set_escape(str(report_md_path)),
         report_call=_build_legacy_report_call_win(plan, max_size_percent,
                                                   no_report=no_report),
         **common,

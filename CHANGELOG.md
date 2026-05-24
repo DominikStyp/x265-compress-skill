@@ -3,6 +3,29 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.1] — 2026-05-25
+
+### Fixed
+- **`%` in a filename no longer breaks the generated encoder scripts** — a full
+  audit + fix of every `%`-sensitive sink in script generation, extending the
+  1.4.3 ffmpeg-segment fix:
+  - **POSIX terminal-title `printf`** (the reported bug): the title was
+    interpolated into the `printf` *format* string, so `printf` parsed a `%` in
+    the filename (e.g. `70% Hell` → `% H`) as a conversion specifier and printed
+    `invalid format character`. The title is now passed as a `%s` *data*
+    argument, immune to `%` and any other printf-special character.
+  - **Windows `.bat` path stashing** (a separate, more serious miss): cmd
+    expands `%VAR%` and strips a lone `%` inside `set "VAR=..."`, so a source
+    like `C:\…50%PATH%….mkv` had its **actual input/output/workdir path
+    corrupted** before the encoder ran. Every value embedded in a `set "..."`
+    (input, output, workdir, worker/report script paths, the hook sidecar path)
+    now doubles its `%`. The legacy `.bat` terminal title also now uses the
+    escaped form (it previously used the raw stem, mishandling `%` and `&`).
+
+  Verified there are no remaining `%`-unsafe sinks: ffmpeg `concat`/`mpegts`/
+  `null` outputs are plain (not printf templates), and no Python `%`-format
+  string is ever fed a filename.
+
 ## [1.5.0] — 2026-05-25
 
 ### Fixed

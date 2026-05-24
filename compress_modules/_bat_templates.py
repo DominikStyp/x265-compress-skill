@@ -78,7 +78,7 @@ exit /b 127
 
 BAT_TEMPLATE = """@echo off
 chcp 65001 >nul
-title x265 compress: {base}
+title x265 compress: {base_title}
 
 REM Preflight: fail with a readable message (not a vanishing window) if the
 REM tools aren't on PATH yet — e.g. this .bat was double-clicked from a shell

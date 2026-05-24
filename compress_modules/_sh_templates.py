@@ -47,7 +47,9 @@ _SKILL_WORKER={resumable_script}
 _SKILL_WORKDIR={workdir}{hooks_setup}
 
 # Terminal title (works in Terminal.app, iTerm2, gnome-terminal, etc.).
-printf '\\033]0;x265 compress (resumable): {base_title}\\007'
+# The title is a printf DATA argument (%s), never part of the format string, so
+# a `%` (or any printf-special char) in the filename can't break it.
+printf '\\033]0;x265 compress (resumable): %s\\007' {base_title}
 
 echo "=== ffmpeg x265 compression (resumable mode) ==="
 echo "Input:    \\"${{_SKILL_IN}}\\""
@@ -110,7 +112,8 @@ _SKILL_REPORT={report_script}
 _SKILL_REPORT_MD={report_md_path}
 
 # Terminal title (Terminal.app, iTerm2, gnome-terminal, etc.).
-printf '\\033]0;x265 compress: {base_title}\\007'
+# Title passed as a printf DATA argument (%s) so a `%` in the filename is safe.
+printf '\\033]0;x265 compress: %s\\007' {base_title}
 
 # Capture start time for the wall-clock duration in the report.
 _START_TS=$(date +%s)
@@ -144,7 +147,7 @@ ffmpeg -hide_banner -loglevel error -nostats -progress - -y \\
 ENCODE_RC=${{PIPESTATUS[0]}}
 echo ""
 if [ ${{ENCODE_RC}} -eq 0 ]; then
-    echo "=== Done. Output: \\"{output_path}\\" ==="
+    echo "=== Done. Output: \\"${{_SKILL_OUT}}\\" ==="
     _IN_BYTES=$(stat -f%z "${{_SKILL_IN}}" 2>/dev/null || stat -c%s "${{_SKILL_IN}}" 2>/dev/null)
     _OUT_BYTES=$(stat -f%z "${{_SKILL_OUT}}" 2>/dev/null || stat -c%s "${{_SKILL_OUT}}" 2>/dev/null)
     awk -v i="${{_IN_BYTES}}" -v o="${{_OUT_BYTES}}" 'BEGIN {{
