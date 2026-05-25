@@ -3,6 +3,49 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.0] — 2026-05-25
+
+### Added
+- **`retry_with_bigger_crf` — auto-escalate CRF when the size guard stops a
+  job.** Previously a `stopped-threshold` abort (projected output over
+  `max_size_percent`) produced no output and you had to manually re-run at a
+  higher `--crf`, guessing a value. Opt in per job or in `defaults` and the
+  queue now re-encodes the same source at a progressively higher CRF until the
+  projection fits — or `crf_max` is reached (new terminal status
+  `stopped-threshold-crf-exhausted`, a needs-attention state that doesn't stop
+  the queue). New queue-only keys: `retry_with_bigger_crf` (default `false`),
+  `crf_step` (default `1`), `crf_max` (default `28`).
+  - Cheap by design: the size guard aborts at ~5% progress, so each *rejected*
+    CRF costs a fraction of an encode; only the accepted CRF runs to completion.
+  - Each attempt escalates from the CRF the previous attempt **actually used**
+    (so an auto-picked CRF is handled correctly), and the report row records the
+    final CRF.
+  - Correctness: the CRF-independent lossless split is reused across attempts;
+    the superseded encoded chunks (`enc_src_*.mkv`, incl. `.part`) are **moved
+    aside** into a `.crf<N>_superseded_<ts>/` subdir of the workdir (never
+    deleted, per the never-delete rule) so no old-CRF video can leak into the
+    retry's concat. A typo'd `crf_step`/`crf_max` bails to no-escalation with a
+    warning rather than crashing the queue.
+
+### Fixed
+- **Pre-flight no longer fails an otherwise-fine source on benign dup-DTS.**
+  Sources cut/joined with tools like Machete carry duplicate DTS at the join
+  points ("non monotonically increasing dts" muxer warnings). The decoder
+  finishes cleanly (`exit 0`) and the file plays fine, but the pre-flight scan
+  counted those stderr lines as decode errors and failed the whole job
+  (`pre-flight-failed`, exit 6) — forcing a `no_pre_flight_scan: true`
+  workaround that also disabled *real* corruption screening.
+  - The codebase already treats dup-DTS as non-fatal **post-encode**
+    (`verify_loop` → `is_dts_only_verify_failure`); pre-flight now applies the
+    same carve-out. A window is benign only when `decode_exit_code == 0` **and**
+    every stderr line is a dup-DTS warning — classified via a new
+    `non_dts_error_count` on the decode walk, computed over **all** stderr lines
+    (not the truncated samples), so a real error can't hide behind dup-DTS noise.
+    A window mixing dup-DTS with any genuine decode error still fails.
+  - Surfaced in the summary (`… N dup-DTS window(s) — benign, will be
+    re-stamped`). The `.preflight.json` cache gains a `scan_version` so stale
+    pre-fix "failed" verdicts are re-scanned, and is now written atomically.
+
 ## [1.5.2] — 2026-05-25
 
 ### Fixed

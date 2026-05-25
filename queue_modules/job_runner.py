@@ -14,7 +14,7 @@ from pathlib import Path
 
 from platform_compat import IS_WINDOWS
 
-from .job_schema import build_compress_argv
+from .job_schema import build_compress_argv, derive_workdir
 
 
 # Exit-code -> status mapping. Matches encode_resumable.py's sys.exit values.
@@ -27,6 +27,13 @@ _EXIT_STATUS: dict[int, str] = {
     7: "awaiting-chunk-fix",
     8: "stopped-by-user",      # graceful 'finish after current chunk' stop
 }
+
+# retry_with_bigger_crf defaults (see job_schema.VALID_KEYS). A higher CRF
+# means a smaller file at lower quality; crf_max caps how far we degrade
+# before giving up. Status emitted when the cap is reached still over budget.
+DEFAULT_CRF_STEP = 1
+DEFAULT_CRF_MAX = 28
+CRF_EXHAUSTED_STATUS = "stopped-threshold-crf-exhausted"
 
 
 def status_for_exit(rc: int) -> str:
@@ -182,4 +189,80 @@ def run_one_job(*, compress_py: Path, merged: dict,
         in_bytes=in_bytes, merged=merged,
         status=status, elapsed=elapsed, summary=summary,
     )
+    return status, row
+
+
+def supersede_encoded_chunks(workdir: Path, old_crf: int) -> int:
+    """Set aside chunks already encoded at `old_crf` so the next CRF attempt
+    re-encodes them. Returns how many files were moved.
+
+    Moves every `enc_src_*.mkv` (the glob also covers the `enc_src_*.part.mkv`
+    partials) into a `.crf<old>_superseded_<ts>/` subdir of the workdir. We
+    MOVE, never delete (encoded bytes are user data — the never-delete rule),
+    and we leave the CRF-independent split (`src_*.mkv` + `.split_done`)
+    untouched so re-splitting is skipped. The encoder's resume/verify globs are
+    non-recursive (`workdir.glob(...)`), so chunks under the subdir become
+    invisible — a chunk with no `enc_*.mkv` is re-encoded at the new CRF."""
+    if not workdir.is_dir():
+        return 0
+    encoded = sorted(workdir.glob("enc_src_*.mkv"))
+    if not encoded:
+        return 0
+    stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+    aside = workdir / f".crf{old_crf}_superseded_{stamp}"
+    aside.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for f in encoded:
+        try:
+            f.rename(aside / f.name)
+            moved += 1
+        except OSError as e:
+            print(f"  WARNING: could not set aside {f.name}: {e}",
+                  file=sys.stderr)
+    return moved
+
+
+def run_job_with_crf_retry(*, compress_py: Path, merged: dict,
+                          i: int, n: int) -> tuple[str, dict]:
+    """run_one_job, plus the opt-in `retry_with_bigger_crf` escalation.
+
+    When a job stops on the size guard (`stopped-threshold`) and the job has
+    `retry_with_bigger_crf`, re-encode the SAME source at a higher CRF until it
+    fits under `max_size_percent` or `crf_max` is reached. Each attempt
+    escalates from the CRF the previous attempt actually ran at (so an
+    auto-picked CRF is handled correctly), reuses the lossless split, and sets
+    the superseded encoded chunks aside. No flag = exactly the old behavior."""
+    status, row = run_one_job(compress_py=compress_py, merged=merged, i=i, n=n)
+    if not merged.get("retry_with_bigger_crf"):
+        return status, row
+
+    # Coerce loudly-but-safely: a typo'd crf_step/crf_max in queue.json must
+    # not crash the whole queue mid-run after attempt 1 already encoded. Bail
+    # to no-escalation (return the first result) the same way a missing CRF does.
+    try:
+        crf_step = max(1, int(merged.get("crf_step", DEFAULT_CRF_STEP)))
+        crf_max = int(merged.get("crf_max", DEFAULT_CRF_MAX))
+    except (TypeError, ValueError):
+        print("  retry_with_bigger_crf: invalid crf_step/crf_max in queue.json; "
+              "not escalating.", file=sys.stderr)
+        return status, row
+    workdir = derive_workdir(Path(merged["input"]))
+
+    while status == "stopped-threshold":
+        used_crf = row.get("crf")
+        if used_crf is None:
+            print("  retry_with_bigger_crf: could not determine the CRF used; "
+                  "not escalating.")
+            return status, row
+        next_crf = int(used_crf) + crf_step
+        if next_crf > crf_max:
+            print(f"  size guard still hit at CRF {used_crf}; CRF cap "
+                  f"{crf_max} reached — giving up ({CRF_EXHAUSTED_STATUS}).")
+            row["status"] = CRF_EXHAUSTED_STATUS
+            return CRF_EXHAUSTED_STATUS, row
+        moved = supersede_encoded_chunks(workdir, int(used_crf))
+        print(f"  size guard hit at CRF {used_crf}; retrying at CRF "
+              f"{next_crf} (cap {crf_max}; set aside {moved} encoded chunk(s)).")
+        status, row = run_one_job(compress_py=compress_py,
+                                 merged={**merged, "crf": next_crf}, i=i, n=n)
     return status, row

@@ -438,8 +438,24 @@ Object with `defaults` (recommended — set things once, override per file):
 | `eight_bit` | `--eight-bit` | bool |
 | `resumable` | `--resumable` | bool, **default `true` in queue mode** |
 | `on_chunk_done` | `--on-chunk-done` | argv list (or bare string) run after each chunk — see **Chunk-finished hook** below |
+| `retry_with_bigger_crf` | queue-only | bool, default `false` — auto-retry a size-guard-stopped job at higher CRF (see **Auto-retry on size guard** below) |
+| `crf_step` | queue-only | int, default `1` — how much to raise CRF per retry |
+| `crf_max` | queue-only | int, default `28` — stop escalating past this; emits `stopped-threshold-crf-exhausted` |
 
 Unknown keys produce a warning and are dropped — gives you a typo safety net.
+
+### Auto-retry on size guard (`retry_with_bigger_crf`)
+
+When the size guard stops a job (`stopped-threshold` — projected output exceeds `max_size_percent`), the job normally ends with **no output** and you'd re-run manually at a higher `--crf`. Set `retry_with_bigger_crf: true` (in `defaults` or per job) and the queue instead **re-encodes the same source at a higher CRF** (by `crf_step`, escalating from the CRF the attempt actually used) until the projection fits — or `crf_max` is reached, ending as `stopped-threshold-crf-exhausted` (a needs-attention status, doesn't stop the queue).
+
+```json
+{
+  "defaults": {"max_size_percent": 80, "retry_with_bigger_crf": true, "crf_max": 26},
+  "jobs": [{"input": "hard-to-shrink.mp4"}]
+}
+```
+
+Cheap by design: the size guard aborts at ~5% progress, so each *rejected* CRF costs a fraction of an encode — only the final accepted CRF runs to completion. The lossless split is reused across attempts (CRF-independent); superseded encoded chunks are **moved aside** into a `.crf<N>_superseded_<ts>/` subdir of the workdir (never deleted), so no old-CRF video can leak into the retry. Some sources can't shrink at any reasonable quality — hitting `crf_max` and reporting `…-crf-exhausted` is the honest outcome rather than a degraded file.
 
 ### Chunk-finished hook (`on_chunk_done`)
 
@@ -560,7 +576,7 @@ _Generated: 2026-05-16 21:40:55_
 | # | File | Status | Input | Output | Saved | Saved % | CRF | Preset | Time | VMAF | vmaf_lo | PSNR | SSIM | Grade | Method |
 ```
 
-The Status column uses the same vocabulary as the queue runner: `ok`, `skipped-exists`, `skipped-not-found`, `stopped-threshold`, `pre-flight-failed`, `awaiting-chunk-fix`, `chunk-choked`, `stopped-by-user`, `failed-gen`, `failed-parse`, `failed-exit-<N>`. Skipped/aborted/failed rows still appear in the table (with `—` for Output/Saved) so you can see *every* attempt. Quality columns (VMAF, vmaf_lo, PSNR, SSIM, Grade, Method) appear only when at least one job has a quality sidecar.
+The Status column uses the same vocabulary as the queue runner: `ok`, `skipped-exists`, `skipped-not-found`, `stopped-threshold`, `stopped-threshold-crf-exhausted`, `pre-flight-failed`, `awaiting-chunk-fix`, `chunk-choked`, `stopped-by-user`, `failed-gen`, `failed-parse`, `failed-exit-<N>`. Skipped/aborted/failed rows still appear in the table (with `—` for Output/Saved) so you can see *every* attempt. Quality columns (VMAF, vmaf_lo, PSNR, SSIM, Grade, Method) appear only when at least one job has a quality sidecar.
 
 To opt out of the per-file report on a direct `compress.py` run, pass `--no-report`.
 

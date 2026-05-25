@@ -32,6 +32,11 @@ VALID_KEYS: set[str] = {
     "auto_patch_source",
     "max_patch_seconds",
     "on_chunk_done",
+    # Queue-only keys (consumed by the queue runner, NOT forwarded to
+    # compress.py argv): auto-escalate CRF when the size guard stops a job.
+    "retry_with_bigger_crf",
+    "crf_step",
+    "crf_max",
 }
 
 
@@ -109,6 +114,13 @@ def derive_output_path(input_path: Path) -> Path:
     if input_path.suffix.lower() == ".mkv":
         return input_path.parent / f"{base}.x265.mkv"
     return input_path.parent / f"{base}.mkv"
+
+
+def derive_workdir(input_path: Path) -> Path:
+    """The encoder's per-source working directory, mirroring script_writer.py:
+    `<output_dir>/.tmp/.compress_<source_stem>`. Used by the CRF-retry logic to
+    locate already-encoded chunks that must be set aside between attempts."""
+    return derive_output_path(input_path).parent / ".tmp" / f".compress_{input_path.stem}"
 
 
 def expand_jobs(jobs: list[dict], queue_dir: Path) -> list[dict]:

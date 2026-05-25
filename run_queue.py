@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 from platform_compat import enable_utf8_io
-from queue_modules.job_runner import run_one_job
+from queue_modules.job_runner import run_job_with_crf_retry
 from queue_modules.job_schema import derive_output_path, merge_job
 from queue_modules.queue_io import reload_queue_with_retry
 
@@ -134,7 +134,8 @@ def _write_aggregate_reports(skill_dir: Path, queue_path: Path,
 # decision. Anything else is treated as a real failure (fail-safe).
 _CLEAN_STATUSES = {"ok", "skipped-exists"}
 _ATTENTION_STATUSES = {
-    "stopped-threshold", "awaiting-chunk-fix", "skipped-not-found",
+    "stopped-threshold", "stopped-threshold-crf-exhausted",
+    "awaiting-chunk-fix", "skipped-not-found",
     "pre-flight-failed", "chunk-choked", "stopped-by-user",
 }
 
@@ -276,7 +277,7 @@ def main() -> int:
                 _emit_json_status(args.json_status, skip_row)
             continue
 
-        status, row = run_one_job(
+        status, row = run_job_with_crf_retry(
             compress_py=compress_py, merged=merged,
             i=job_counter, n=len(seen_inputs),
         )

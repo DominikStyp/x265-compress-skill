@@ -22,12 +22,19 @@ PC rebooted in the middle of a queue and we restart from the top).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
 from typing import Optional
 
 from .verify import _run_decode_walk
+
+
+# Bump when the scan's verdict logic changes so stale cached verdicts (keyed
+# only on file size+mtime) are invalidated and the source is re-scanned with
+# the new logic. v2: dup-DTS-only windows are no longer counted as failures.
+_SCAN_VERSION = 2
 
 
 def _probe_duration(src: Path) -> float:
@@ -60,6 +67,8 @@ def _read_cache(src: Path) -> Optional[dict]:
     try:
         cached = json.loads(cache_path.read_text(encoding="utf-8"))
         st = src.stat()
+        if cached.get("scan_version") != _SCAN_VERSION:
+            return None  # verdict logic changed since this was written — re-scan
         if cached.get("src_size") != st.st_size:
             return None
         # Allow tiny mtime drift (e.g. ntfs/fat resolution differences when
@@ -77,8 +86,12 @@ def _write_cache(src: Path, result: dict) -> None:
     cache_path = _cache_path_for(src)
     try:
         st = src.stat()
-        cache_path.write_text(
+        # Atomic write (temp-then-replace): a crash mid-write must never leave a
+        # truncated .preflight.json at the final path (atomic-writes invariant).
+        tmp = cache_path.with_name(cache_path.name + ".tmp")
+        tmp.write_text(
             json.dumps({
+                "scan_version": _SCAN_VERSION,
                 "src_size": st.st_size,
                 "src_mtime": st.st_mtime,
                 "scanned_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -86,6 +99,7 @@ def _write_cache(src: Path, result: dict) -> None:
             }, indent=2),
             encoding="utf-8",
         )
+        os.replace(tmp, cache_path)
     except Exception:
         pass
 
@@ -105,6 +119,7 @@ def _walk_one_window(src: Path, start_s: float, dur_s: float,
     return {
         "decode_exit_code": r["decode_exit_code"],
         "error_count": r["error_count"],
+        "non_dts_error_count": r["non_dts_error_count"],
         "error_samples": r["error_samples"],
         "elapsed_seconds": r["elapsed_seconds"],
     }
@@ -170,14 +185,30 @@ def pre_flight_scan(src: Path, *, seg_sec: int = 60,
 
     bad_windows: list[dict] = []
     windows_clean = 0
+    dts_warn_windows = 0
     for start in starts:
         end = min(src_dur, start + seg_sec)
         dur = end - start
         if dur <= 0.1:
             continue
         walk = _walk_one_window(src, start, dur, per_window_timeout_s)
-        if walk["decode_exit_code"] == 0 and walk["error_count"] == 0:
+        exit_ok = walk["decode_exit_code"] == 0
+        if exit_ok and walk["error_count"] == 0:
             windows_clean += 1
+            continue
+        # Benign dup-DTS carve-out: the decoder finished (exit 0) and EVERY
+        # stderr line was a "non monotonically increasing dts" muxer warning
+        # (non_dts_error_count == 0, counted over all lines — not the truncated
+        # samples). These are not picture corruption; the file plays fine and
+        # the chunked x265 pass re-stamps timestamps anyway (post-encode
+        # dts_recovery clears any residual). The codebase already treats this
+        # class as non-fatal post-encode (verify_loop -> is_dts_only_verify_
+        # failure); pre-flight must apply the same carve-out instead of failing
+        # an otherwise-fine source. A window mixing dup-DTS with even one real
+        # error still has non_dts_error_count > 0 and falls through to bad.
+        if exit_ok and walk["non_dts_error_count"] == 0 and walk["error_count"] > 0:
+            windows_clean += 1
+            dts_warn_windows += 1
             continue
         bad_windows.append({
             "start_sec": round(start, 2),
@@ -194,6 +225,7 @@ def pre_flight_scan(src: Path, *, seg_sec: int = 60,
         "window_seconds": seg_sec,
         "windows_total": len(starts),
         "windows_clean": windows_clean,
+        "dts_warn_windows": dts_warn_windows,
         "bad_windows": bad_windows,
         "elapsed_seconds": round(time.monotonic() - overall_start, 1),
     }
@@ -206,8 +238,11 @@ def format_pre_flight_summary(result: dict) -> str:
     the formatting stays consistent between encode_resumable.py's pre-encode
     summary and any future report writers."""
     if result.get("passed"):
+        dts_warn = result.get("dts_warn_windows", 0)
+        dts_note = (f", {dts_warn} dup-DTS window(s) — benign, will be "
+                    f"re-stamped" if dts_warn else "")
         return (f"  Pre-flight OK ({result['windows_clean']}/"
-                f"{result['windows_total']} windows clean, "
+                f"{result['windows_total']} windows clean{dts_note}, "
                 f"{result['elapsed_seconds']:.0f}s"
                 f"{' — cached' if result.get('cache_hit') else ''})")
     lines = [f"  Pre-flight FAILED ({len(result['bad_windows'])} bad "

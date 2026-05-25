@@ -26,6 +26,7 @@ from pathlib import Path
 
 from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
+from .dts_recovery import _DTS_MARKER
 from .probes import fmt_dur, probe_duration, probe_full
 
 
@@ -84,12 +85,16 @@ def _run_decode_walk(path: Path, *,
     bitstream errors. Both None walks the whole file.
 
     Result keys (always present):
-        ok               True iff exit_code == 0 AND no stderr AND not timed_out
-        decode_exit_code ffmpeg's exit code (None on Popen-level failure)
-        error_count      number of non-empty stderr lines (decoder errors)
-        error_samples    first `max_samples` lines verbatim (truncated to 240 chars each)
-        elapsed_seconds  wall time of the walk
-        timed_out        True if killed by timeout_s
+        ok                 True iff exit_code == 0 AND no stderr AND not timed_out
+        decode_exit_code   ffmpeg's exit code (None on Popen-level failure)
+        error_count        number of non-empty stderr lines (decoder errors)
+        non_dts_error_count number of those lines that are NOT benign dup-DTS
+                           muxer warnings — i.e. the count of REAL decode errors.
+                           Computed over EVERY stderr line (not the truncated
+                           samples) so a real error past `max_samples` can't hide.
+        error_samples      first `max_samples` lines verbatim (truncated to 240 chars each)
+        elapsed_seconds    wall time of the walk
+        timed_out          True if killed by timeout_s
     """
     args = ["ffmpeg", "-v", "error", "-hide_banner", "-xerror"]
     if start_s is not None:
@@ -125,16 +130,19 @@ def _run_decode_walk(path: Path, *,
             "ok": False,
             "decode_exit_code": None,
             "error_count": 0,
+            "non_dts_error_count": 0,
             "error_samples": [f"(could not run decode walk: {e})"],
             "elapsed_seconds": round(time.monotonic() - t0, 1),
             "timed_out": False,
         }
 
     lines = [l.strip() for l in err_text.splitlines() if l.strip()]
+    non_dts = sum(1 for l in lines if _DTS_MARKER not in l)
     return {
         "ok": exit_code == 0 and len(lines) == 0 and not timed_out,
         "decode_exit_code": exit_code,
         "error_count": len(lines),
+        "non_dts_error_count": non_dts,
         "error_samples": [l[:240] for l in lines[:max_samples]],
         "elapsed_seconds": round(time.monotonic() - t0, 1),
         "timed_out": timed_out,
