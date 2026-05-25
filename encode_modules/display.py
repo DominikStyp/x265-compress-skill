@@ -37,10 +37,9 @@ from pathlib import Path
 from typing import Optional
 
 from platform_compat import (
+    HAS_KEY_INPUT,
     assign_to_lifetime_group,
     create_lifetime_group,
-    resume_pid,
-    suspend_pid,
 )
 
 from .finish_signal import FINISH_FILENAME, FinishSignal
@@ -51,6 +50,11 @@ from . import display_render as render
 # Re-export for callers that previously read these from the class. Module-level
 # now since the rendering helpers live in display_render.
 BAR_WIDTH = render.BAR_WIDTH
+
+# Sentinel filename inside the encode workdir. Creating <workdir>/PAUSE suspends
+# every active slot; deleting it resumes them. The file-based counterpart to the
+# Space/1-9 keys for headless / over-SSH runs (mirrors FINISH_FILENAME).
+PAUSE_FILENAME = "PAUSE"
 
 
 def _compute_live_rates_from_samples(samples,
@@ -89,11 +93,13 @@ def _compute_live_rates_from_samples(samples,
     return f"{speed:.3f}x", f"{fps:.1f}"
 
 
-try:
-    import msvcrt  # noqa: F401  (probed here so HAS_KEY_INPUT is consistent)
-    HAS_KEY_INPUT = True
-except ImportError:
-    HAS_KEY_INPUT = False
+# HAS_KEY_INPUT is imported from platform_compat (above) — the SINGLE source of
+# truth that the keyboard listener (keyboard_input.py) also gates on. It is True
+# only when interactive key input is actually available (Windows console, or a
+# POSIX TTY with termios). This module previously re-derived it via `import
+# msvcrt`, which is Windows-only — so on macOS/Linux it was always False and the
+# help footer wrongly claimed "keyboard pause/resume unavailable on this
+# platform" even though the listener was running and the pause keys worked.
 
 
 class ParallelDisplay:
@@ -132,6 +138,13 @@ class ParallelDisplay:
         # between chunks; it never interrupts an in-flight chunk.
         self.finish_signal = FinishSignal(
             (workdir / FINISH_FILENAME) if workdir else None)
+        # File-based pause: the no-keyboard counterpart to Space/1-9. While a
+        # <workdir>/PAUSE sentinel exists, all active slots are suspended;
+        # removing it resumes them. Polled from the render loop (sync_file_pause)
+        # so it works in headless/over-SSH runs where the key listener is off.
+        # `_file_paused` debounces so we only suspend/resume on the file's edges.
+        self._pause_file = (workdir / PAUSE_FILENAME) if workdir else None
+        self._file_paused = False
         self.total_duration = total_duration_sec
         self.source_bytes = source_bytes
         self.max_output_bytes = max_output_bytes
@@ -319,83 +332,31 @@ class ParallelDisplay:
         self.events.put(f"  ! {chunk_name}: FAILED (exit {rc}): {snippet}")
 
     # --- interactive pause/resume controls ---
-
-    def _mark_pause_start(self, slot: int) -> None:
-        """Stamp the slot's `paused_at` with the current wall time. Caller
-        must hold `self.lock`. Pairs with `_settle_pause_elapsed` on resume."""
-        s = self.slots.get(slot)
-        if s:
-            s["paused_at"] = time.monotonic()
-
-    def _settle_pause_elapsed(self, slot: int) -> None:
-        """Take the in-flight pause window (since `paused_at`) and accumulate
-        it into the slot's `paused_s` counter so per-chunk elapsed never
-        counts time the slot was suspended. Caller must hold `self.lock`.
-        No-op if the slot wasn't paused."""
-        s = self.slots.get(slot)
-        if s and s.get("paused_at") is not None:
-            s["paused_s"] = s.get("paused_s", 0.0) + (
-                time.monotonic() - s["paused_at"])
-            s["paused_at"] = None
+    #
+    # The implementations live in `pause_control` (display.py is at the 500-line
+    # cap); these are thin delegates so the public API + every caller (keyboard
+    # listener, render loop, tests) is unchanged. Same pattern as check_threshold
+    # / check_choke below.
 
     def toggle_pause(self, slot: int) -> str:
-        """Toggle suspension of the ffmpeg currently in `slot`. Returns a
-        one-line status message for the events log.
+        from . import pause_control
+        return pause_control.toggle_pause(self, slot)
 
-        `slot` is the internal 0-based index; messages show the 1-based
-        human label (slot 0 -> "slot 1") so the display, the keys (1-9),
-        and the event log all agree."""
-        label = slot + 1
-        with self.lock:
-            if slot < 0 or slot >= self.parallel:
-                return f"  ! no such slot: {label}"
-            proc = self.active_procs.get(slot)
-            if not proc:
-                return f"  ! slot {label}: idle, no ffmpeg to pause"
-            pid = proc.pid
-            currently_paused = slot in self.paused_slots
-        if currently_paused:
-            if resume_pid(pid):
-                with self.lock:
-                    self.paused_slots.discard(slot)
-                    self._settle_pause_elapsed(slot)
-                return f"  > slot {label}: RESUMED (PID {pid})"
-            return f"  ! slot {label}: NtResumeProcess failed for PID {pid}"
-        else:
-            if suspend_pid(pid):
-                with self.lock:
-                    self.paused_slots.add(slot)
-                    self._mark_pause_start(slot)
-                return f"  || slot {label}: PAUSED (PID {pid})"
-            return f"  ! slot {label}: NtSuspendProcess failed for PID {pid}"
+    def pause_all(self) -> list[str]:
+        from . import pause_control
+        return pause_control.pause_all(self)
 
     def resume_all(self) -> list[str]:
-        """Resume every paused slot. Returns one status message per slot."""
-        with self.lock:
-            paused = list(self.paused_slots)
-            procs = {s: self.active_procs.get(s) for s in paused}
-        msgs: list[str] = []
-        for slot in paused:
-            label = slot + 1
-            proc = procs.get(slot)
-            if not proc:
-                with self.lock:
-                    self.paused_slots.discard(slot)
-                continue
-            if resume_pid(proc.pid):
-                with self.lock:
-                    self.paused_slots.discard(slot)
-                    self._settle_pause_elapsed(slot)
-                msgs.append(f"  > slot {label}: RESUMED (PID {proc.pid})")
-            else:
-                msgs.append(f"  ! slot {label}: resume failed for PID {proc.pid}")
-        if not msgs:
-            msgs.append("  (no paused slots)")
-        return msgs
+        from . import pause_control
+        return pause_control.resume_all(self)
+
+    def sync_file_pause(self) -> None:
+        from . import pause_control
+        return pause_control.sync_file_pause(self)
 
     def move_focus(self, delta: int) -> None:
-        with self.lock:
-            self.focused_slot = (self.focused_slot + delta) % self.parallel
+        from . import pause_control
+        return pause_control.move_focus(self, delta)
 
     def toggle_finish(self) -> str:
         """Toggle the 'finish after current chunk' request (keyboard `f`).

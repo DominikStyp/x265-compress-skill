@@ -141,7 +141,10 @@ def render_help(has_key_input: bool, finish_requested: bool = False) -> str:
         return ("  FINISH AFTER CHUNK: ON — stopping once in-flight chunks "
                 "finish (f=cancel)")
     if not has_key_input:
-        return "  (keyboard pause/resume unavailable on this platform)"
+        # No interactive TTY (piped/headless/over-SSH): the key listener is off,
+        # so point the operator at the file-based fallbacks instead.
+        return ("  (no TTY — keys off; create a PAUSE file in the workdir to "
+                "pause, FINISH to stop after the current chunk)")
     return ("  Keys: ↑↓ focus  Space toggle  1-9 slot N  "
             "r resume all  f finish  ? help")
 

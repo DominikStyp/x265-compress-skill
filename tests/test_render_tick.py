@@ -25,7 +25,11 @@ class _FakeDisplay:
         self.events: "queue.Queue[str]" = queue.Queue()
         self.checked_threshold = False
         self.checked_choke = False
+        self.synced_file_pause = False
         self._render_fn = render_fn
+
+    def sync_file_pause(self) -> None:
+        self.synced_file_pause = True
 
     def check_threshold(self) -> None:
         self.checked_threshold = True
@@ -63,6 +67,7 @@ class RenderTickGuardTest(unittest.TestCase):
     def test_tick_runs_guards_on_happy_path(self) -> None:
         display = _FakeDisplay(lambda: None)
         _render_tick(display)
+        self.assertTrue(display.synced_file_pause)
         self.assertTrue(display.checked_threshold)
         self.assertTrue(display.checked_choke)
         self.assertEqual(display.drain_events(), [])

@@ -3,6 +3,38 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.0] — 2026-05-25
+
+### Fixed
+- **Pause/resume is no longer wrongly reported as unavailable on macOS/Linux.**
+  The live display computed its own `HAS_KEY_INPUT` via `import msvcrt` (a
+  Windows-only module), so on macOS/Linux it was always False and the help
+  footer printed "(keyboard pause/resume unavailable on this platform)" — even
+  though the key listener was running and the Space/1-9/r keys actually worked
+  on a TTY. The display now reads the same `platform_compat.HAS_KEY_INPUT` the
+  listener gates on (termios + isatty), so the footer tells the truth. The
+  underlying SIGSTOP/SIGCONT pause path was already correct on POSIX.
+
+### Added
+- **File-based PAUSE for headless / over-SSH runs.** The keyboard pause keys
+  need an interactive TTY; a detached run (`nohup`, `&`, redirected output,
+  cron) has none, so the keys are off. Now creating a `PAUSE` file in the encode
+  workdir suspends **every** active slot, and deleting it resumes them — the
+  no-keyboard counterpart to Space/1-9 (mirrors the existing `FINISH` stop-file).
+  - Polled ~2×/second by the render thread and **level-triggered**, so it also
+    re-pauses freshly-started chunks while the file persists (a chunk boundary
+    starts a new ffmpeg). While the file exists the encode stays suspended,
+    including at the point it would otherwise finish — remove it to let the run
+    complete, or use `FINISH` for a graceful stop-after-current-chunk.
+  - The no-TTY footer now points operators at the `PAUSE`/`FINISH` file
+    fallbacks instead of just saying "unavailable".
+
+### Changed
+- **Refactor:** the display's pause/resume controls moved out of `display.py`
+  (which was at the 500-line cap) into a focused `encode_modules/pause_control.py`
+  (same delegation pattern as `size_projection`/`choke_detection`); `display.py`
+  is back under the cap. Behaviour-preserving, covered by tests.
+
 ## [1.6.0] — 2026-05-25
 
 ### Added

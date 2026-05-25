@@ -165,6 +165,7 @@ def _render_tick(display: ParallelDisplay) -> None:
     unexpected exception silently disables BOTH safety mechanisms, not just
     the live display. The failure is surfaced via the events log instead."""
     try:
+        display.sync_file_pause()
         display.check_threshold()
         display.check_choke()
         display.render()
