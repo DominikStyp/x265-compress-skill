@@ -3,6 +3,31 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.8.0] — 2026-05-27
+
+### Added
+- **Progress bars for the concat and quality-check phases.** These two phases
+  run after the live chunk-encode display tears down, and previously showed no
+  live progress — concat was silent end to end, and the quality pass printed
+  only a plain text percentage. Both now render the same
+  `[#####-----] NN.N%  H:MM:SS / H:MM:SS` bar the encode phase uses:
+  - **Concat (phase 3):** a bar driven by ffmpeg's `-progress` stream, scaled to
+    the total duration.
+  - **Quality (phase 4):** one *overall* bar across the sampled chunks (weighted
+    by chunk duration, annotated `chunk i/N`) instead of a per-chunk flicker.
+
+  Both adapt to their output: an in-place rewrite on a TTY, or a throttled line
+  roughly every 10% on a pipe / headless log. No new dependencies — the renderer
+  reuses the existing bar glyphs and time formatter.
+
+### Changed
+- Internal: a shared `encode_modules/progress_bar.py` (single-line bar renderer +
+  ffmpeg `-progress` reader) now backs both phases, and `display_render.bar_fill`
+  was extracted so the bar glyphs can't drift between the encode display and the
+  new bars. The concat ffmpeg is now spawned via `Popen` and terminated on any
+  error/abort (subprocess-discipline invariant). Behaviour-preserving for the
+  live encode display.
+
 ## [1.7.3] — 2026-05-26
 
 ### Fixed

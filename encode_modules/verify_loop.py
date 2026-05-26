@@ -107,7 +107,7 @@ def run_encode_verify_loop(src: Path, chunks: list[Path], workdir: Path,
         if dst.exists():
             ensure_not_source(dst)
             dst.unlink()
-        concat_chunks(workdir, dst)
+        concat_chunks(workdir, dst, total_dur=total_dur)
         problems = verify_output(src, dst)
         if not problems:
             return []

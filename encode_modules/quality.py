@@ -30,12 +30,13 @@ from __future__ import annotations
 import json
 import os as _os
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Callable, Optional
 
-from .probes import fmt_dur, probe_duration, probe_fps
+from .probes import probe_duration, probe_fps
+from .progress_bar import ProgressBar, read_ffmpeg_progress
 from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
 
@@ -111,34 +112,6 @@ def _build_libvmaf_cmd(src: Path, dst: Path, *,
     return cmd
 
 
-def _render_vmaf_progress(state: dict[str, str], *,
-                         progress_prefix: str,
-                         expected_dur: float,
-                         is_tty: bool,
-                         last_line_pct: float) -> float:
-    """Emit one progress tick during a libvmaf run. TTY callers get an
-    in-place ANSI rewrite (`\\r ... \\033[K`); pipe callers get one printed
-    line every ~10pp of progress so the log isn't drowned in updates.
-    Returns the new `last_line_pct` so the caller can throttle pipe output."""
-    try:
-        out_s = float(state.get("out_time_us", "0")) / 1_000_000
-    except ValueError:
-        return last_line_pct
-    pct = min(100.0, out_s / expected_dur * 100.0)
-    fps = state.get("fps", "?")
-    speed = state.get("speed", "?")
-    body = (f"{progress_prefix} {pct:5.1f}%  "
-            f"{fmt_dur(out_s)}/{fmt_dur(expected_dur)}  {fps} fps  {speed}")
-    if is_tty:
-        sys.stdout.write(f"\r{body}\033[K")
-        sys.stdout.flush()
-        return last_line_pct
-    if pct - last_line_pct >= 10.0:
-        print(body, flush=True)
-        return pct
-    return last_line_pct
-
-
 def _parse_vmaf_log(log_path: Path) -> dict | None:
     """Read libvmaf's JSON log and extract the VMAF / PSNR / SSIM aggregates
     that downstream report-writers consume. Returns None when the file is
@@ -173,14 +146,17 @@ def _quality_check_run(src: Path, dst: Path, *,
                       subsample: int = 10,
                       seek_start: float | None = None,
                       duration: float | None = None,
-                      expected_dur: float = 0.0,
-                      progress_prefix: str | None = None) -> dict | None:
+                      on_progress: Optional[Callable[[float, str, str], None]]
+                      = None) -> dict | None:
     """One ffmpeg+libvmaf invocation comparing `src` vs `dst`. Shared by
     full-file mode (no seek_start/duration) and segment-sampling mode (both
     set). The fps normalization that makes scores honest on concat'd outputs
     lives in `_build_libvmaf_cmd`; the JSON parser in `_parse_vmaf_log`.
 
-    Returns a dict of metrics, or None on any failure."""
+    `on_progress(out_time_s, fps, speed)` is fired once per ffmpeg `-progress`
+    tick; the CALLER owns rendering (so quality_check_chunks can draw one
+    overall bar across many runs). Returns a dict of metrics, or None on any
+    failure."""
     log_path = Path(tempfile.gettempdir()) / f"vmaf_{_os.getpid()}_{int(time.time()*1000000)}.json"
     libvmaf_node = _libvmaf_node_for(log_path, subsample)
     cmd = _build_libvmaf_cmd(
@@ -189,9 +165,6 @@ def _quality_check_run(src: Path, dst: Path, *,
         seek_start=seek_start, duration=duration,
         libvmaf_node=libvmaf_node,
     )
-
-    is_tty = sys.stdout.isatty() if progress_prefix is not None else False
-    last_line_pct = -100.0
 
     proc = None
     try:
@@ -202,30 +175,21 @@ def _quality_check_run(src: Path, dst: Path, *,
             **low_priority_popen_kwargs(),
         )
 
-        state: dict[str, str] = {}
-        assert proc.stdout is not None
-        for raw in proc.stdout:
-            line = raw.strip()
-            if "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            state[k] = v
-            if (k == "out_time_us" and progress_prefix is not None
-                    and expected_dur > 0):
-                last_line_pct = _render_vmaf_progress(
-                    state,
-                    progress_prefix=progress_prefix,
-                    expected_dur=expected_dur,
-                    is_tty=is_tty,
-                    last_line_pct=last_line_pct,
-                )
+        def _tick(state: "dict[str, str]") -> None:
+            if on_progress is None:
+                return
+            try:
+                out_s = float(state.get("out_time_us", "0")) / 1_000_000
+            except ValueError:
+                return
+            on_progress(out_s, state.get("fps", "?").strip(),
+                        state.get("speed", "?").strip())
 
+        assert proc.stdout is not None
+        read_ffmpeg_progress(proc.stdout, _tick)
         rc = proc.wait()
         if proc.stderr:
             proc.stderr.read()
-        if is_tty and progress_prefix is not None:
-            sys.stdout.write("\r\033[K")
-            sys.stdout.flush()
         if rc != 0:
             return None
         return _parse_vmaf_log(log_path)
@@ -293,29 +257,44 @@ def quality_check_chunks(workdir: Path, *,
 
     indices = _pick_chunks_to_sample(len(src_chunks), n_chunks)
 
+    # ONE overall bar across the sampled chunks: total = Σ their durations,
+    # `done_s` accumulates as each finishes, so the bar fills 0→100% smoothly
+    # over the whole pass instead of resetting per chunk.
+    durations = [probe_duration(src_chunks[idx]) for idx in indices]
+    total_s = sum(durations)
+    bar = ProgressBar(progress_prefix) if progress_prefix is not None else None
+    done_s = 0.0
+
     per_chunk: list[dict] = []
     for i, idx in enumerate(indices):
         src_chunk = src_chunks[idx]
         enc_chunk = workdir / f"enc_{src_chunk.name}"
         if not enc_chunk.exists():
-            # Missing chunk — pre-concat sanity should have caught this,
-            # but be defensive and just skip the missing one rather than
-            # crashing the quality check.
+            # Missing chunk — pre-concat sanity should have caught this, but be
+            # defensive: skip it, still advancing the bar so totals stay honest.
+            done_s += durations[i]
             continue
 
-        seg_prefix = None
-        if progress_prefix is not None:
-            seg_prefix = f"{progress_prefix} chunk #{idx+1}/{len(src_chunks)}"
+        on_progress = None
+        if bar is not None:
+            # Capture per-chunk base/label by value (default args) so the
+            # closure isn't bitten by late-binding of the loop variables.
+            def on_progress(out_s, fps, speed, _base=done_s,
+                            _label=f"chunk {i+1}/{len(indices)}"):
+                bar.update(done_s=_base + out_s, total_s=total_s,
+                           fps=fps, speed=speed, suffix=_label)
         scores = _quality_check_run(
             src_chunk, enc_chunk,
             subsample=subsample,
-            expected_dur=probe_duration(src_chunk),
-            progress_prefix=seg_prefix,
+            on_progress=on_progress,
         )
+        done_s += durations[i]
         if scores is not None:
             scores["_chunk_index"] = idx
             per_chunk.append(scores)
 
+    if bar is not None:
+        bar.finish()
     if not per_chunk:
         return None
 
@@ -430,22 +409,34 @@ def quality_check(src: Path, dst: Path, *,
                 for i in range(num_segments)
             ]
 
+        # One overall bar across the sampled segments (same scheme as chunks).
+        seg_total_s = len(positions) * segment_sec
+        seg_bar = (ProgressBar(progress_prefix)
+                   if progress_prefix is not None else None)
+        seg_done_s = 0.0
+
         per_seg: list[dict] = []
         for i, start in enumerate(positions):
-            seg_prefix = None
-            if progress_prefix is not None:
-                seg_prefix = f"{progress_prefix} seg {i+1}/{num_segments}"
+            on_progress = None
+            if seg_bar is not None:
+                def on_progress(out_s, fps, speed, _base=seg_done_s,
+                                _label=f"seg {i+1}/{len(positions)}"):
+                    seg_bar.update(done_s=_base + out_s, total_s=seg_total_s,
+                                   fps=fps, speed=speed, suffix=_label)
             scores = _quality_check_run(
                 src, dst,
                 subsample=subsample,
                 seek_start=start,
                 duration=segment_sec,
-                expected_dur=segment_sec,
-                progress_prefix=seg_prefix,
+                on_progress=on_progress,
             )
+            seg_done_s += segment_sec
             if scores is not None:
                 scores["_segment_start_sec"] = round(start, 1)
                 per_seg.append(scores)
+
+        if seg_bar is not None:
+            seg_bar.finish()
 
         if not per_seg:
             return None
@@ -472,13 +463,17 @@ def quality_check(src: Path, dst: Path, *,
             ],
         }
 
-    # Full-file mode (slow exhaustive)
+    # Full-file mode (slow exhaustive) — the single run IS the whole pass.
+    bar = ProgressBar(progress_prefix) if progress_prefix is not None else None
+    on_progress = None
+    if bar is not None:
+        def on_progress(out_s, fps, speed):
+            bar.update(done_s=out_s, total_s=src_dur, fps=fps, speed=speed)
     scores = _quality_check_run(
-        src, dst,
-        subsample=subsample,
-        expected_dur=src_dur,
-        progress_prefix=progress_prefix,
+        src, dst, subsample=subsample, on_progress=on_progress,
     )
+    if bar is not None:
+        bar.finish()
     if scores is not None:
         scores["method"] = "full"
         scores["sampling_mode"] = "full file"

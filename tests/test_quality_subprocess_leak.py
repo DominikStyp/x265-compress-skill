@@ -58,7 +58,7 @@ class QualityChildTerminatedOnErrorTest(unittest.TestCase):
         with mock.patch.object(quality, "probe_fps", return_value="30/1"), \
              mock.patch.object(quality.subprocess, "Popen", return_value=fake):
             result = quality._quality_check_run(
-                Path("src.mkv"), Path("dst.mkv"), expected_dur=0.0,
+                Path("src.mkv"), Path("dst.mkv"),
             )
         # The error path still returns "no score"...
         self.assertIsNone(result)

@@ -18,6 +18,9 @@ from pathlib import Path
 
 from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
+from .probes import probe_duration
+from .progress_bar import ProgressBar, read_ffmpeg_progress
+
 
 def split_source(src: Path, workdir: Path, seg_sec: int) -> list[Path]:
     """Lossless segment (-c copy) of `src` into ~seg_sec-second chunks,
@@ -157,11 +160,16 @@ def x265_params_with_pools(x265_params: str, parallel: int) -> str:
     return f"{x265_params}:pools={cores_per_chunk}"
 
 
-def concat_chunks(workdir: Path, dst: Path) -> None:
+def concat_chunks(workdir: Path, dst: Path, *,
+                  total_dur: float | None = None) -> None:
     """Lossless concat of all enc_src_*.mkv chunks in workdir into `dst`.
     Refuses to concat if any src_*.mkv lacks a paired enc_src_*.mkv — that
     silent-truncation guard sits AHEAD of the concat so we never splice an
-    incomplete set together and then wipe the workdir in cleanup."""
+    incomplete set together and then wipe the workdir in cleanup.
+
+    `total_dur` (seconds) scales the progress bar; the caller passes the value
+    it already computed. When omitted it's probed from the encoded chunks, so
+    standalone callers still get a bar (just at the cost of a few probes)."""
     src_chunks = sorted(workdir.glob("src_*.mkv"))
     expected = {workdir / f"enc_{c.name}" for c in src_chunks}
     missing = sorted(p for p in expected if not p.exists())
@@ -179,29 +187,64 @@ def concat_chunks(workdir: Path, dst: Path) -> None:
     encs = sorted(c for c in workdir.glob("enc_*.mkv") if ".part" not in c.suffixes)
     if not encs:
         sys.exit("ERROR: no encoded chunks to concatenate")
-    print(f"[3/4] Concatenating {len(encs)} chunks to final output...")
     concat_list = workdir / "concat.txt"
     # ffmpeg concat demuxer wants forward-slash paths inside single quotes.
     concat_list.write_text(
         "\n".join(f"file '{c.resolve().as_posix()}'" for c in encs) + "\n",
         encoding="utf-8",
     )
+    if total_dur is None:
+        total_dur = sum(probe_duration(c) for c in encs)
     # -fflags +genpts regenerates clean monotonic PTS/DTS during the
     # concat copy. Without it, per-chunk DTS quirks at chunk seams trip
     # verify_output's `-xerror` decode walk; dts_recovery then has to run
     # a costly MPEG-TS roundtrip (~5 min on a 2.5 GB output) to clean
     # them up. Setting +genpts preemptively prevents that on most files,
     # and is no-op when timestamps are already clean.
-    r = subprocess.run(wrap_cmd_for_low_priority([
+    # -progress pipe:1 + -nostats stream machine-readable progress to stdout so
+    # we can draw a bar; ffmpeg's own logs/errors still go to inherited stderr.
+    cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-fflags", "+genpts",
         "-f", "concat", "-safe", "0",
         "-i", str(concat_list),
         "-c", "copy",
+        "-progress", "pipe:1", "-nostats",
         str(dst),
-    ]), **low_priority_popen_kwargs())
-    if r.returncode != 0:
-        sys.exit(f"ERROR: concat failed (exit {r.returncode})")
+    ]
+    bar = ProgressBar(f"[3/4] Concatenating {len(encs)} chunks")
+    proc = None
+    rc = 1
+    try:
+        proc = subprocess.Popen(
+            wrap_cmd_for_low_priority(cmd),
+            stdout=subprocess.PIPE, text=True, encoding="utf-8",
+            errors="replace", **low_priority_popen_kwargs(),
+        )
+
+        def _tick(state: "dict[str, str]") -> None:
+            try:
+                out_s = float(state.get("out_time_us", "0")) / 1_000_000
+            except ValueError:
+                return
+            bar.update(done_s=out_s, total_s=total_dur,
+                       speed=state.get("speed", "?").strip())
+
+        read_ffmpeg_progress(proc.stdout, _tick)
+        rc = proc.wait()
+    except BaseException:
+        # Never leak the concat ffmpeg on error / Ctrl-C (subprocess discipline).
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        raise
+    finally:
+        bar.finish()
+    if rc != 0:
+        sys.exit(f"ERROR: concat failed (exit {rc})")
 
 
 def cleanup(workdir: Path) -> None:

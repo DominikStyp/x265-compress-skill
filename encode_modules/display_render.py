@@ -68,13 +68,20 @@ def slot_eta_str(elapsed_s: Optional[float], pct: float, *, paused: bool) -> str
     return fmt_dur(max(0.0, elapsed_s * (100.0 - pct) / pct))
 
 
+def bar_fill(pct: float, *, width: int = BAR_WIDTH) -> str:
+    """The plain `####------` fill of a progress bar `width` chars wide,
+    clamped to [0, width]. Shared with the post-display single-line bars in
+    `progress_bar.py` so the glyphs never drift between the live encode display
+    and the concat / quality phases."""
+    filled = max(0, min(width, int(round(pct / 100 * width))))
+    return "#" * filled + "-" * (width - filled)
+
+
 def slot_bar(pct: float, *, paused: bool) -> str:
     """The colored progress bar shown inside `[slot N] ... [###---]` —
     red while paused so the eye snaps to it, green during normal encode."""
-    filled = max(0, min(BAR_WIDTH, int(round(pct / 100 * BAR_WIDTH))))
-    bar_inner = "#" * filled + "-" * (BAR_WIDTH - filled)
     bar_color = C_RED if paused else C_GREEN
-    return f"{bar_color}{bar_inner}{C_RESET}"
+    return f"{bar_color}{bar_fill(pct)}{C_RESET}"
 
 
 def render_slot_main(slot_id: int, state: Optional[dict],
