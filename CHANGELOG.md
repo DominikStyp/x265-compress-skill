@@ -3,6 +3,26 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.1] — 2026-05-26
+
+### Fixed
+- **A successful encode of an auto-patched source no longer reports a false
+  `exit-1`.** With `--auto-patch-source`, the pre-flight step rebuilds a broken
+  h264 source into a patched copy that lives **inside** the workdir, and
+  `main()` was treating that copy as "the source" for the whole run. After the
+  encode finished and `cleanup()` wiped the workdir (patched copy included), the
+  end-of-run `print_summary()` called `src.stat()` on the now-deleted file and
+  crashed with `FileNotFoundError` — turning a fully verified, successful encode
+  into a reported failure. `main()` now keeps `src` pointing at the user's
+  original input (which lives outside the workdir and is never deleted) for the
+  post-cleanup reporters, while a separate `encode_src` feeds the pipeline,
+  history, and quality measurement. The "Source untouched at: …" hint now also
+  names the real original instead of the deleted temp copy.
+- **`write_single_file_report` no longer re-`stat()`s the source for
+  `input_bytes`.** It records the caller's pre-cleanup `source_bytes` instead,
+  so the report can never touch a deleted workdir path and its `input_bytes`
+  agrees with the `max_size_percent` denominator.
+
 ## [1.7.0] — 2026-05-25
 
 ### Fixed

@@ -125,13 +125,18 @@ def main() -> int:
     run_start = time.monotonic()
 
     # Pre-flight + optional auto-patch. Bail before any chunking work if
-    # the source is unsafe to encode.
-    status, src, scan, rescan = handle_preflight(src, workdir, args)
+    # the source is unsafe to encode. `encode_src` is what the pipeline
+    # actually consumes — on auto-patch it's a rebuilt copy that lives INSIDE
+    # the workdir. `src` stays the user's original (outside the workdir, never
+    # deleted): the end-of-run reporters must read IT, because cleanup() wipes
+    # the workdir — statting the patched copy there would crash a successful
+    # encode into a false exit-1 (see tests/test_patched_source_cleanup.py).
+    status, encode_src, scan, rescan = handle_preflight(src, workdir, args)
     if status == "failed":
         _exit_pre_flight_failed(src, dst, args, scan, rescan,
                                 patched_attempted=args.auto_patch_source)
 
-    chunks = split_source(src, workdir, args.segment_seconds)
+    chunks = split_source(encode_src, workdir, args.segment_seconds)
     print(f"      To stop after the current chunk (resumable): press 'f' in "
           f"the live display, or create {workdir / FINISH_FILENAME}")
 
@@ -145,7 +150,7 @@ def main() -> int:
             print(f"      WARNING: on_chunk_done hook config unreadable "
                   f"({args.hooks_config}); continuing without it.",
                   file=sys.stderr)
-    chunk_hook = ChunkHook(hook_command, source=src, workdir=workdir,
+    chunk_hook = ChunkHook(hook_command, source=encode_src, workdir=workdir,
                            total=len(chunks))
     if chunk_hook.enabled:
         print(f"      on_chunk_done hook: {hook_command}")
@@ -154,12 +159,12 @@ def main() -> int:
                  if args.total_duration_seconds is not None
                  else sum(probe_duration(c) for c in chunks))
     source_bytes = (args.source_bytes if args.source_bytes is not None
-                    else src.stat().st_size)
+                    else encode_src.stat().st_size)
 
-    init_history_state(src, dst, args, source_bytes)
+    init_history_state(encode_src, dst, args, source_bytes)
 
     problems = run_encode_verify_loop(
-        src, chunks, workdir, dst,
+        encode_src, chunks, workdir, dst,
         args=args, total_dur=total_dur, source_bytes=source_bytes,
         max_attempts=MAX_VERIFY_ATTEMPTS,
         chunk_hook=chunk_hook,
@@ -170,19 +175,21 @@ def main() -> int:
         # handle_verify_failure_block sys.exits(4); next line unreachable.
 
     quality_scores = measure_quality_and_write_sidecar(
-        src, dst, workdir, args=args, n_chunks_total=len(chunks),
+        encode_src, dst, workdir, args=args, n_chunks_total=len(chunks),
     )
 
     elapsed = time.monotonic() - run_start
     # Flush history BEFORE cleanup wipes the workdir — finalize_history_state
     # probes each chunk's duration and reads file sizes off disk.
     finalize_history_state(
-        src, dst, workdir, chunks, elapsed, quality_scores,
+        encode_src, dst, workdir, chunks, elapsed, quality_scores,
         encode_order=reorder_middle_first(chunks),
     )
 
     ensure_not_source(workdir)
     cleanup(workdir)
+    # Report against the ORIGINAL source (`src`), not `encode_src`: the latter
+    # may be the patched copy that cleanup() just deleted with the workdir.
     print_summary(src, dst, quality_scores)
 
     if not args.no_report:

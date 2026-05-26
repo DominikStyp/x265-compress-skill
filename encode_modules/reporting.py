@@ -97,7 +97,12 @@ def write_single_file_report(src: Path, dst: Path, *,
         row = {
             "input": str(src),
             "output": str(dst),
-            "input_bytes": src.stat().st_size,
+            # Use the caller's pre-cleanup byte count, never a fresh stat():
+            # on an auto-patched run `src` is the original but the size the
+            # encode gated against is `source_bytes` (the patched copy). Re-
+            # statting would (a) disagree with `max_size_percent`'s denominator
+            # below and (b) risk touching disk after workdir cleanup.
+            "input_bytes": source_bytes,
             "output_bytes": dst.stat().st_size if dst.exists() else None,
             "crf": args.crf,
             "preset": args.preset,
