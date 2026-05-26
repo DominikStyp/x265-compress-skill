@@ -26,7 +26,7 @@ from pathlib import Path
 
 from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
-from .dts_recovery import _DTS_MARKER
+from .dts_recovery import DTS_MARKER
 from .probes import fmt_dur, probe_duration, probe_full
 
 
@@ -137,7 +137,7 @@ def _run_decode_walk(path: Path, *,
         }
 
     lines = [l.strip() for l in err_text.splitlines() if l.strip()]
-    non_dts = sum(1 for l in lines if _DTS_MARKER not in l)
+    non_dts = sum(1 for l in lines if DTS_MARKER not in l)
     return {
         "ok": exit_code == 0 and len(lines) == 0 and not timed_out,
         "decode_exit_code": exit_code,

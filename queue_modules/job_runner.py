@@ -14,7 +14,7 @@ from pathlib import Path
 
 from platform_compat import IS_WINDOWS
 
-from .job_schema import build_compress_argv, derive_workdir
+from .job_schema import build_compress_argv, derive_output_path, derive_workdir
 
 
 # Exit-code -> status mapping. Matches encode_resumable.py's sys.exit values.
@@ -182,7 +182,6 @@ def run_one_job(*, compress_py: Path, merged: dict,
     status = status_for_exit(rc)
     print(f"[{i}/{n}] -> {status}  ({elapsed:.0f}s)")
 
-    from .job_schema import derive_output_path
     out_path = derive_output_path(input_path)
     row = build_job_row(
         input_path=input_path, out_path=out_path,

@@ -22,6 +22,9 @@ import time
 
 
 def fmt_time(seconds: float | int | None) -> str:
+    # A deliberate local variant of formatting.format_hms (NOT imported):
+    # progress.py is spawned as a standalone stdin-filter subprocess and stays
+    # dependency-free on purpose. It also renders "?:??:??" for an unknown ETA.
     if seconds is None or seconds != seconds or seconds < 0:  # None or NaN or negative
         return "?:??:??"
     s = int(seconds)

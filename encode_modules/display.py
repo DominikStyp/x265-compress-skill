@@ -42,6 +42,7 @@ from platform_compat import (
     create_lifetime_group,
 )
 
+from ._sample_window import select_window_endpoints
 from .finish_signal import FINISH_FILENAME, FinishSignal
 from .probes import probe_duration
 from . import display_render as render
@@ -75,16 +76,11 @@ def _compute_live_rates_from_samples(samples,
     samples_list = list(samples) if samples else []
     if len(samples_list) < 2:
         return "?", "?"
-    now_t, now_out, now_frame = samples_list[-1]
-    window_start = now_t - window_s
-    older = None
-    for sample in samples_list:
-        if sample[0] >= window_start:
-            older = sample
-            break
-    if older is None:
-        older = samples_list[0]
+    # Anchor the window on the newest sample's own timestamp.
+    older, newer = select_window_endpoints(
+        samples_list, samples_list[-1][0] - window_s)
     older_t, older_out, older_frame = older
+    now_t, now_out, now_frame = newer
     dt = now_t - older_t
     if dt <= 0.1:
         return "?", "?"

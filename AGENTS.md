@@ -57,8 +57,10 @@ non-negotiable; the reviewer subagents in rule 4 must check them.
 - If a change pushes a file over 500 lines, **refactor it** (split into focused
   modules under `encode_modules/`, `compress_modules/`, or `platform_compat/`) as
   part of the same change — do not defer it.
-- `encode_modules/display.py` is currently ~540 lines (a pre-existing
-  violation). If you touch it, split it instead of growing it further.
+- All modules are currently within the cap. The largest are
+  `encode_modules/quality.py` (~480) and `encode_modules/display.py` (~460) —
+  both have little headroom, so if you add to either, extract rather than grow
+  (display.py's pause/projection/choke logic was already split out this way).
 - Splitting must be behaviour-preserving and covered by the existing/extended
   tests.
 

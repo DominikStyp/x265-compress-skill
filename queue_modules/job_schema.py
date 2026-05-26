@@ -11,6 +11,8 @@ import json
 import sys
 from pathlib import Path
 
+from compress_modules.plan import compress_workdir
+
 
 # Snake-case keys a queue job dict may contain. Maps 1:1 to compress.py CLI
 # flags (kebab-cased). Unknown keys are warned about + dropped — typo
@@ -117,10 +119,12 @@ def derive_output_path(input_path: Path) -> Path:
 
 
 def derive_workdir(input_path: Path) -> Path:
-    """The encoder's per-source working directory, mirroring script_writer.py:
-    `<output_dir>/.tmp/.compress_<source_stem>`. Used by the CRF-retry logic to
-    locate already-encoded chunks that must be set aside between attempts."""
-    return derive_output_path(input_path).parent / ".tmp" / f".compress_{input_path.stem}"
+    """The encoder's per-source working directory: `<output_dir>/.tmp/.compress_
+    <source_stem>`. Used by the CRF-retry logic to locate already-encoded chunks
+    that must be set aside between attempts. Routes through the shared
+    `compress_workdir` so it can never drift from what the generator creates."""
+    tmp_dir = derive_output_path(input_path).parent / ".tmp"
+    return compress_workdir(tmp_dir, input_path)
 
 
 def expand_jobs(jobs: list[dict], queue_dir: Path) -> list[dict]:

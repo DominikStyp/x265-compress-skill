@@ -17,22 +17,32 @@ import json
 import subprocess
 from pathlib import Path
 
+from formatting import format_hms
+
+# A metadata probe normally returns in milliseconds; this ceiling only ever
+# fires when ffprobe wedges on a corrupt/stalled source (or a dead network
+# mount). It must be generous enough never to false-trip a slow-but-working
+# probe, while still bounding what would otherwise be an unrecoverable hang.
+_PROBE_TIMEOUT_S = 120
+
 
 def fmt_dur(seconds: float) -> str:
-    """Seconds → 'H:MM:SS'. Lives here because every consumer of probe_duration
-    needs it for display alongside the duration value."""
-    s = int(seconds)
-    h, rem = divmod(s, 3600)
-    m, sec = divmod(rem, 60)
-    return f"{h}:{m:02d}:{sec:02d}"
+    """Seconds → 'H:MM:SS'. Re-exported here (delegating to the canonical
+    formatting.format_hms) because every consumer of probe_duration needs it
+    for display alongside the duration value."""
+    return format_hms(seconds)
 
 
 def probe_duration(path: Path) -> float:
-    """Container-level duration in seconds, 0.0 on failure."""
-    r = subprocess.run(
-        ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", str(path)],
-        capture_output=True, text=True, encoding="utf-8",
-    )
+    """Container-level duration in seconds, 0.0 on failure (incl. timeout)."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", str(path)],
+            capture_output=True, text=True, encoding="utf-8",
+            timeout=_PROBE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return 0.0
     if r.returncode != 0:
         return 0.0
     try:
@@ -42,12 +52,17 @@ def probe_duration(path: Path) -> float:
 
 
 def probe_full(path: Path) -> dict | None:
-    """ffprobe a file and return parsed format + streams JSON, or None on failure."""
-    r = subprocess.run(
-        ["ffprobe", "-v", "error", "-print_format", "json",
-         "-show_format", "-show_streams", str(path)],
-        capture_output=True, text=True, encoding="utf-8",
-    )
+    """ffprobe a file and return parsed format + streams JSON, or None on
+    failure (incl. timeout)."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-print_format", "json",
+             "-show_format", "-show_streams", str(path)],
+            capture_output=True, text=True, encoding="utf-8",
+            timeout=_PROBE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return None
     if r.returncode != 0:
         return None
     try:
@@ -60,12 +75,16 @@ def probe_fps(path: Path) -> str | None:
     """Return the first video stream's r_frame_rate as the original
     fraction string (e.g. "50/1" or "30000/1001"). Preserving the
     fraction avoids float-rounding artifacts when passed back to ffmpeg
-    as -r. Returns None on failure."""
-    r = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", str(path)],
-        capture_output=True, text=True, encoding="utf-8",
-    )
+    as -r. Returns None on failure (incl. timeout)."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, encoding="utf-8",
+            timeout=_PROBE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return None
     if r.returncode != 0:
         return None
     val = (r.stdout or "").strip()

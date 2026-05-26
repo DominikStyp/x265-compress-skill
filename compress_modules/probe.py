@@ -42,11 +42,19 @@ def run_ffprobe(path: Path) -> dict:
             "         macOS:   brew install ffmpeg\n"
             "         Windows: winget install Gyan.FFmpeg\n"
             "         Linux:   sudo apt install ffmpeg  (or dnf/pacman/zypper/apk)")
-    proc = subprocess.run(
-        ["ffprobe", "-v", "error", "-print_format", "json",
-         "-show_format", "-show_streams", str(path)],
-        capture_output=True, text=True, encoding="utf-8",
-    )
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-print_format", "json",
+             "-show_format", "-show_streams", str(path)],
+            capture_output=True, text=True, encoding="utf-8",
+            # Generous ceiling: a healthy probe returns in well under a second,
+            # so this only trips on a wedged ffprobe (corrupt source / dead
+            # mount) — better a clear error than an indefinite hang at startup.
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        sys.exit(f"ffprobe timed out after 120s probing {path} "
+                 "(corrupt source or unresponsive storage?)")
     if proc.returncode != 0:
         sys.exit(f"ffprobe failed: {proc.stderr.strip()}")
     return json.loads(proc.stdout)
@@ -84,13 +92,21 @@ def _video_bitrate_kbps(video: dict, fmt: dict, audio_count: int,
         return int(int(video["bit_rate"]) / 1000)
     if fmt.get("bit_rate"):
         total = int(int(fmt["bit_rate"]) / 1000)
-        # Subtract one 192 kbps audio allowance if any audio is present —
-        # `bit_rate` at format level includes all streams.
-        return max(total - 192, 0) or total if audio_count else total
+        # Format-level bit_rate includes audio; subtract a single 192 kbps
+        # allowance if any audio is present (intentionally NOT per-track here —
+        # only the size/duration fallback below scales by track count).
+        return _minus_audio_allowance(total, 1) if audio_count else total
     if duration_sec > 0:
         total = int((file_size_bytes * 8) / duration_sec / 1000)
-        return max(total - 192 * max(audio_count, 1), 0) or total
+        return _minus_audio_allowance(total, max(audio_count, 1))
     return 0
+
+
+def _minus_audio_allowance(total_kbps: int, tracks: int) -> int:
+    """Subtract a 192 kbps allowance per `tracks`, but never return a near-zero
+    rate — fall back to the gross total if the subtraction would."""
+    net = total_kbps - 192 * tracks
+    return net if net > 0 else total_kbps
 
 
 def analyse(path: Path) -> SourceInfo:

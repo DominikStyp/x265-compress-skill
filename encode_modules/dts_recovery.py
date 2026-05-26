@@ -58,7 +58,7 @@ from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 # Picked specifically over a generic decode-error marker so we don't
 # accidentally trigger on a genuine data-corruption failure that an
 # MPEG-TS roundtrip won't fix.
-_DTS_MARKER = "non monotonically increasing dts"
+DTS_MARKER = "non monotonically increasing dts"
 
 
 def is_dts_only_verify_failure(problems: list[str]) -> bool:
@@ -69,7 +69,7 @@ def is_dts_only_verify_failure(problems: list[str]) -> bool:
     structural issue, retry would mask it)."""
     if not problems:
         return False
-    return all(_DTS_MARKER in p for p in problems)
+    return all(DTS_MARKER in p for p in problems)
 
 
 def _probe_codec(path: Path, stream_type: str) -> Optional[str]:

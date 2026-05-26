@@ -23,16 +23,17 @@ import os
 from pathlib import Path
 
 from encode_modules.hook_config import write_hook_sidecar
+from formatting import format_hms
 from platform_compat import IS_WINDOWS
 
 from . import _bat_templates as bat_t
 from . import _sh_templates as sh_t
-from .plan import EncodePlan
+from .plan import compress_workdir, EncodePlan, SCRIPT_EXTENSION
 from .probe import SourceInfo
 
-
-# Extension to write. compress.py resolves this for the .bat_path in plan.py.
-SCRIPT_EXTENSION = ".bat" if IS_WINDOWS else ".sh"
+# SCRIPT_EXTENSION is re-exported from plan.py (its single source of truth) for
+# the handful of callers that read it off this module (e.g. _smoke_test.py).
+__all__ = ["write_script", "SCRIPT_EXTENSION"]
 
 
 # --- Quoting helpers --------------------------------------------------------
@@ -100,11 +101,9 @@ def _hook_fragments_posix(tmp_dir: Path, stem: str,
 # --- Time formatting -------------------------------------------------------
 
 def fmt_duration(seconds: float) -> str:
-    """Format seconds as `H:MM:SS` for the script's pre-encode summary."""
-    s = int(seconds)
-    h, rem = divmod(s, 3600)
-    m, sec = divmod(rem, 60)
-    return f"{h:d}:{m:02d}:{sec:02d}"
+    """Format seconds as `H:MM:SS` for the script's pre-encode summary
+    (delegates to the canonical formatting.format_hms)."""
+    return format_hms(seconds)
 
 
 def _safe_audio_codecs(values) -> str:
@@ -336,7 +335,7 @@ def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
                           no_report, no_pause, on_chunk_done=None) -> str:
     common = _win_substitutions(info, plan, source_path, no_pause=no_pause)
     if resumable:
-        workdir = tmp_dir / f".compress_{source_path.stem}"
+        workdir = compress_workdir(tmp_dir, source_path)
         parallel_label = (f"{parallel} chunks in parallel"
                           if parallel > 1 else "one at a time")
         extra_args = _build_extra_args(
@@ -393,7 +392,7 @@ def _render_posix_script(info, plan, source_path, skill_dir, tmp_dir,
     report_script = _sh_quote(str(skill_dir / "report.py"))
 
     if resumable:
-        workdir = tmp_dir / f".compress_{source_path.stem}"
+        workdir = compress_workdir(tmp_dir, source_path)
         parallel_label = (f"{parallel} chunks in parallel"
                           if parallel > 1 else "one at a time")
         extra_args = _build_extra_args(

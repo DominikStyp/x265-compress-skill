@@ -37,11 +37,19 @@ from __future__ import annotations
 
 import json
 import subprocess
-import time
 from pathlib import Path
 from typing import Optional
 
 from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
+
+from .probes import probe_duration
+
+# A metadata probe returns near-instantly; this only fires on a wedged ffprobe.
+_PROBE_TIMEOUT_S = 120
+# Segment build/concat re-encodes at most a few GOP-aligned seconds (the loss
+# budget caps the total), so even a large ceiling never false-trips — it just
+# bounds a hung ffmpeg into a declined patch rather than an indefinite stall.
+_BUILD_TIMEOUT_S = 600
 
 
 def _decode_walk_count(src: Path, start: float, dur: float,
@@ -109,7 +117,7 @@ def _probe_keyframes(src: Path, probe_start: float, probe_end: float) -> list[fl
              "-show_entries", "frame=pts_time,key_frame",
              "-of", "csv", str(src)],
             capture_output=True, text=True, encoding="utf-8",
-            errors="replace",
+            errors="replace", timeout=_PROBE_TIMEOUT_S,
         )
         out: list[float] = []
         for line in (r.stdout or "").splitlines():
@@ -157,6 +165,7 @@ def _probe_video_codec(src: Path) -> Optional[str]:
             ["ffprobe", "-v", "error", "-print_format", "json",
              "-show_streams", "-select_streams", "v:0", str(src)],
             capture_output=True, text=True, encoding="utf-8",
+            timeout=_PROBE_TIMEOUT_S,
         )
         if r.returncode != 0:
             return None
@@ -164,21 +173,6 @@ def _probe_video_codec(src: Path) -> Optional[str]:
         return streams[0].get("codec_name") if streams else None
     except Exception:
         return None
-
-
-def _probe_duration(src: Path) -> float:
-    """Duration in seconds, or 0.0 on probe failure."""
-    try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "error", "-print_format", "json",
-             "-show_format", str(src)],
-            capture_output=True, text=True, encoding="utf-8",
-        )
-        if r.returncode != 0:
-            return 0.0
-        return float(json.loads(r.stdout)["format"].get("duration", 0) or 0)
-    except Exception:
-        return 0.0
 
 
 def _build_copy_segment(src: Path, start: float, end: float,
@@ -196,10 +190,14 @@ def _build_copy_segment(src: Path, start: float, end: float,
         "-f", "mpegts",
         str(out),
     ]
-    r = subprocess.run(wrap_cmd_for_low_priority(args),
-                       capture_output=True, text=True,
-                       encoding="utf-8", errors="replace",
-                       **low_priority_popen_kwargs())
+    try:
+        r = subprocess.run(wrap_cmd_for_low_priority(args),
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           timeout=_BUILD_TIMEOUT_S,
+                           **low_priority_popen_kwargs())
+    except subprocess.TimeoutExpired:
+        return False
     return r.returncode == 0
 
 
@@ -208,7 +206,7 @@ def _build_encode_segment(src: Path, start: float, end: float,
     """Re-encode [start, end) of src into out as MPEG-TS. ffmpeg's decoder
     uses error concealment to fill in the missing refs; x264 veryfast
     CRF 14 then produces a clean near-visually-lossless segment."""
-    r = subprocess.run(wrap_cmd_for_low_priority([
+    args = [
         "ffmpeg", "-v", "error", "-hide_banner", "-y",
         "-ss", f"{start}",
         "-i", str(src),
@@ -219,8 +217,15 @@ def _build_encode_segment(src: Path, start: float, end: float,
         "-bsf:v", "h264_mp4toannexb",
         "-f", "mpegts",
         str(out),
-    ]), capture_output=True, text=True, encoding="utf-8",
-       errors="replace", **low_priority_popen_kwargs())
+    ]
+    try:
+        r = subprocess.run(wrap_cmd_for_low_priority(args),
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           timeout=_BUILD_TIMEOUT_S,
+                           **low_priority_popen_kwargs())
+    except subprocess.TimeoutExpired:
+        return False
     return r.returncode == 0
 
 
@@ -283,7 +288,7 @@ def auto_patch_source(
               f"{total_patch_s:.1f}s exceeds budget {max_patch_seconds}s")
         return None
 
-    src_dur = _probe_duration(src)
+    src_dur = probe_duration(src)
     if src_dur <= 0:
         return None
 
@@ -328,7 +333,7 @@ def auto_patch_source(
     )
 
     out_mp4 = workdir / "source-patched.mp4"
-    r = subprocess.run(wrap_cmd_for_low_priority([
+    concat_args = [
         "ffmpeg", "-v", "error", "-hide_banner", "-y",
         "-f", "concat", "-safe", "0",
         "-i", str(list_file),
@@ -336,8 +341,15 @@ def auto_patch_source(
         "-bsf:a", "aac_adtstoasc",
         "-movflags", "+faststart",
         str(out_mp4),
-    ]), capture_output=True, text=True, encoding="utf-8",
-       errors="replace", **low_priority_popen_kwargs())
+    ]
+    try:
+        r = subprocess.run(wrap_cmd_for_low_priority(concat_args),
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=_BUILD_TIMEOUT_S,
+                           **low_priority_popen_kwargs())
+    except subprocess.TimeoutExpired:
+        print("  ! auto-patch concat timed out")
+        return None
     if r.returncode != 0:
         print(f"  ! auto-patch concat failed (rc={r.returncode})")
         return None

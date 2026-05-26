@@ -3,6 +3,45 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.2] — 2026-05-26
+
+A code-quality pass (readability + SOLID/DRY) plus three robustness fixes that
+tighten the project's own subprocess-discipline invariant. No user-facing
+behaviour or CLI changes; all changes are internal and covered by 34 new tests
+(full suite: 196).
+
+### Fixed
+- **The VMAF quality pass no longer leaks its ffmpeg+libvmaf child** if the
+  read loop raises mid-stream or you Ctrl-C during a multi-minute measurement.
+  The `Popen` is now reaped (terminate → wait → kill) in a `finally`, satisfying
+  "every spawned ffmpeg must be terminated on abort/error."
+- **Probe/build subprocess calls are now bounded by a timeout.** A wedged
+  `ffprobe` (metadata probes in `probes.py`, `pre_flight`, `source_patcher`, and
+  the upfront `compress.py` probe) or a stuck segment build/concat during
+  `--auto-patch-source` previously hung the run forever; each now degrades to its
+  documented safe default (or a clear error) instead. Timeouts are generous
+  (120 s probe / 600 s build) so they can't false-trip on slow-but-working storage.
+- **The `.quality.json` sidecar is written atomically** (temp + `os.replace`,
+  matching `hook_config`/`pre_flight`), so a kill mid-write can't hand the queue
+  runner a truncated file.
+
+### Changed (internal — behaviour-preserving refactors)
+- **One canonical `H:MM:SS` formatter** (`formatting.format_hms`); the two
+  byte-identical copies now delegate to it (`progress`/`report` keep their
+  deliberately different sentinels, now documented).
+- **De-duplicated the ffprobe duration probe** — `source_patcher` uses the
+  canonical `probes.probe_duration`; `history` dropped a redundant loop-local
+  import.
+- **Extracted the trailing-window sample scan** shared by the live-rate display
+  and the choke detector into `encode_modules/_sample_window.py` (the window
+  anchor stays caller-specific, so choke timing is unchanged).
+- **Centralized the `.compress_<stem>` workdir name** in `plan.compress_workdir`,
+  used by both the script generator and the queue's CRF-retry chunk locator —
+  removing a silent drift risk that could make CRF-retry re-encode from scratch.
+- **`SCRIPT_EXTENSION` now has a single source** (`plan.py`); promoted the
+  cross-module `DTS_MARKER` to public; clarified the video-bitrate estimator;
+  removed a dead import and a redundant one.
+
 ## [1.7.1] — 2026-05-26
 
 ### Fixed

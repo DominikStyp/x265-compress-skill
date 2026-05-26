@@ -57,6 +57,9 @@ def _fmt_pct(num: float, den: float) -> str:
 
 
 def _fmt_dur(sec: float | int | None) -> str:
+    # A deliberate variant of formatting.format_hms: this is a compact table
+    # cell, so it DROPS the hours field when zero and renders a "—" for
+    # missing/invalid durations rather than "0:00:00".
     if not sec or sec < 0:
         return "—"
     s = int(sec)

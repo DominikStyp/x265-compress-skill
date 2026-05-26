@@ -200,15 +200,18 @@ def build_chunk_records(workdir: Path,
         src_dur: float | None = None
         # Cheap probe: ffprobe each chunk's duration. For 10-chunk encodes
         # this is ~3 s total — negligible against multi-hour encode times.
+        # A deliberate local probe (not probes.probe_duration): this records
+        # None — not 0.0 — on failure so speed_factor is omitted rather than
+        # divided by a bogus zero, and uses a short per-chunk timeout since
+        # it runs in a loop.
         try:
-            import json as _json
             r = subprocess.run(
                 ["ffprobe", "-v", "error", "-print_format", "json",
                  "-show_format", str(chunk)],
                 capture_output=True, text=True, encoding="utf-8", timeout=10,
             )
             if r.returncode == 0:
-                data = _json.loads(r.stdout)
+                data = json.loads(r.stdout)
                 d = data.get("format", {}).get("duration")
                 src_dur = float(d) if d is not None else None
         except Exception:

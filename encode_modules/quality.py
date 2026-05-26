@@ -193,6 +193,7 @@ def _quality_check_run(src: Path, dst: Path, *,
     is_tty = sys.stdout.isatty() if progress_prefix is not None else False
     last_line_pct = -100.0
 
+    proc = None
     try:
         proc = subprocess.Popen(
             wrap_cmd_for_low_priority(cmd),
@@ -231,6 +232,19 @@ def _quality_check_run(src: Path, dst: Path, *,
     except Exception:
         return None
     finally:
+        # Never leak the ffmpeg+libvmaf child. Unlike subprocess.run, a Popen is
+        # not reaped when the read loop raises (decode error mid-stream) or the
+        # user Ctrl-Cs during a multi-minute pass — terminate it before leaving.
+        if proc is not None and proc.poll() is None:
+            # Guard the whole teardown: a terminate()/wait() that itself raises
+            # (e.g. a Windows handle race) must not skip the log unlink below.
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            except OSError:
+                pass
         try:
             log_path.unlink(missing_ok=True)
         except OSError:

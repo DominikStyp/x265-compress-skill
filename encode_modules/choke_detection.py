@@ -18,6 +18,8 @@ from __future__ import annotations
 import time
 from typing import Optional, TYPE_CHECKING
 
+from ._sample_window import select_window_endpoints
+
 if TYPE_CHECKING:
     from .display import ParallelDisplay
 
@@ -128,18 +130,11 @@ def check_choke(display: "ParallelDisplay") -> Optional[tuple[int, str]]:
             wall_delta = 0.0
             speed = 0.0
         else:
-            window_start_t = now - display.choke_window_seconds
-            # Samples are (t, out_time_s, frame); we read by index here so
-            # the same loop body works whether the deque was populated with
-            # 2-tuples (legacy) or 3-tuples (post-live-rates fix).
-            older = None
-            for sample in samples_list:
-                if sample[0] >= window_start_t:
-                    older = sample
-                    break
-            if older is None:
-                older = samples_list[0]
-            newer = samples_list[-1]
+            # Anchor the trailing window on the current monotonic clock (NOT
+            # the newest sample's timestamp — a stalled encoder stops emitting
+            # samples, so "now" is what reveals the lack of progress).
+            older, newer = select_window_endpoints(
+                samples_list, now - display.choke_window_seconds)
             delta_s = max(0.0, newer[1] - older[1])
             wall_delta = max(0.0001, newer[0] - older[0])
             # Scale the required min-delta proportionally if we don't yet

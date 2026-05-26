@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -73,8 +74,12 @@ def measure_quality_and_write_sidecar(src: Path, dst: Path, workdir: Path, *,
         sidecar_dir = dst.parent / ".tmp"
         sidecar_dir.mkdir(parents=True, exist_ok=True)
         sidecar = sidecar_dir / f"{dst.stem}.quality.json"
-        sidecar.write_text(json.dumps(quality_scores, indent=2),
-                          encoding="utf-8")
+        # Atomic write: the queue runner parses this sidecar, so a kill
+        # mid-write must never leave a truncated JSON at the final path
+        # (atomic-writes invariant — same temp-then-replace as hook_config).
+        tmp = sidecar.with_name(sidecar.name + ".tmp")
+        tmp.write_text(json.dumps(quality_scores, indent=2), encoding="utf-8")
+        os.replace(tmp, sidecar)
     except Exception as e:
         print(f"  (warning: could not write quality sidecar: {e})")
     return quality_scores

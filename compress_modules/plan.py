@@ -15,7 +15,18 @@ from .x265_params import BASE_X265_PARAMS
 # Generated script extension by OS. cmd.exe needs `.bat`; bash uses `.sh`.
 # Plan.py owns this because it builds the script's output path during
 # plan_encode(); the writer reads it from here too.
-_SCRIPT_EXTENSION = ".bat" if IS_WINDOWS else ".sh"
+SCRIPT_EXTENSION = ".bat" if IS_WINDOWS else ".sh"
+
+
+def compress_workdir(tmp_dir: Path, source_path: Path) -> Path:
+    """The encoder's per-source working directory: ``<tmp_dir>/.compress_<stem>``.
+
+    Single source of truth for this name. The script generator
+    (`script_writer`) creates this directory and the queue's CRF-retry logic
+    (`job_schema.derive_workdir`) locates already-encoded chunks inside it — if
+    the two ever computed it differently, CRF-retry would silently re-encode
+    from scratch. Keep them both going through here."""
+    return tmp_dir / f".compress_{source_path.stem}"
 
 
 @dataclass
@@ -172,7 +183,7 @@ def _resolve_output_paths(source_path: Path) -> tuple[Path, Path, str]:
     # If source is already .mkv, suffix with .x265 to avoid overwriting.
     out_name = f"{base}.x265.mkv" if source_path.suffix.lower() == ".mkv" else f"{base}.mkv"
     output_path = source_dir / out_name
-    script_path = tmp_dir / f"compress_{base}{_SCRIPT_EXTENSION}"
+    script_path = tmp_dir / f"compress_{base}{SCRIPT_EXTENSION}"
     return output_path, script_path, base
 
 

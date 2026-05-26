@@ -38,12 +38,18 @@ _SCAN_VERSION = 2
 
 
 def _probe_duration(src: Path) -> float:
-    """Local copy to avoid a circular probes <-> pre_flight import dependency."""
-    r = subprocess.run(
-        ["ffprobe", "-v", "error", "-print_format", "json",
-         "-show_format", str(src)],
-        capture_output=True, text=True, encoding="utf-8",
-    )
+    """Local copy to avoid a circular probes <-> pre_flight import dependency.
+    Generous timeout so a wedged ffprobe on a corrupt source can't hang the
+    pre-flight scan indefinitely (subprocess-discipline invariant)."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-print_format", "json",
+             "-show_format", str(src)],
+            capture_output=True, text=True, encoding="utf-8",
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return 0.0
     if r.returncode != 0:
         return 0.0
     try:
