@@ -150,7 +150,12 @@ def main() -> int:
             print(f"      WARNING: on_chunk_done hook config unreadable "
                   f"({args.hooks_config}); continuing without it.",
                   file=sys.stderr)
-    chunk_hook = ChunkHook(hook_command, source=encode_src, workdir=workdir,
+    # Bind the hook to the ORIGINAL src, not encode_src: on_chunk_done
+    # notifications (e.g. Pushbullet) surface X265_SOURCE to the user, who
+    # expects the source they queued — not the auto-patch's working copy
+    # (`source-patched.mp4`). The workdir/chunk paths it also reports stay
+    # correct because they're keyed off the original-stem workdir.
+    chunk_hook = ChunkHook(hook_command, source=src, workdir=workdir,
                            total=len(chunks))
     if chunk_hook.enabled:
         print(f"      on_chunk_done hook: {hook_command}")

@@ -87,6 +87,74 @@ class PatchedSourceCleanupTest(unittest.TestCase):
             self.assertTrue(original.is_file())
 
 
+class PatchedSourceHookNamesOriginalTest(unittest.TestCase):
+    """The on_chunk_done hook (e.g. Pushbullet notifications) must report the
+    ORIGINAL source filename the user recognizes — never the auto-patch's
+    `source-patched.mp4` working copy. The hook exposes the source via
+    X265_SOURCE, bound at ChunkHook construction, so main() must build it with
+    the original `src`, not the patched `encode_src` the pipeline encodes."""
+
+    def test_chunk_hook_is_built_with_the_original_source(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            original = base / "broken source.mp4"
+            original.write_bytes(b"o" * 1000)
+            dst = base / "out.mkv"
+            workdir = base / ".tmp" / ".compress_broken source"
+            workdir.mkdir(parents=True)
+            patched = workdir / "source-patched.mp4"
+            patched.write_bytes(b"p" * 900)
+
+            args = SimpleNamespace(
+                input=str(original), output=str(dst), workdir=str(workdir),
+                segment_seconds=60, hooks_config=None,
+                total_duration_seconds=10.0, source_bytes=None,
+                auto_patch_source=True, no_report=True,
+            )
+
+            captured: dict = {}
+
+            class _CapturingHook:
+                def __init__(self, command, *, source, workdir, total,
+                             **kwargs) -> None:
+                    captured["source"] = source
+                    self.enabled = False
+
+            def fake_verify_loop(src, chunks, wd, out, **kwargs):
+                out.write_bytes(b"y" * 100)
+                return []
+
+            with mock.patch.object(encode_resumable, "parse_args",
+                                   return_value=args), \
+                 mock.patch.object(encode_resumable, "handle_preflight",
+                                   return_value=("patched", patched,
+                                                 {"passed": False},
+                                                 {"passed": True})), \
+                 mock.patch.object(encode_resumable, "ChunkHook",
+                                   _CapturingHook), \
+                 mock.patch.object(encode_resumable, "split_source",
+                                   return_value=[patched]), \
+                 mock.patch.object(encode_resumable, "reorder_middle_first",
+                                   return_value=[patched]), \
+                 mock.patch.object(encode_resumable, "probe_duration",
+                                   return_value=5.0), \
+                 mock.patch.object(encode_resumable, "init_history_state"), \
+                 mock.patch.object(encode_resumable, "finalize_history_state"), \
+                 mock.patch.object(encode_resumable, "mark_status"), \
+                 mock.patch.object(encode_resumable, "ensure_not_source"), \
+                 mock.patch.object(encode_resumable, "run_encode_verify_loop",
+                                   side_effect=fake_verify_loop), \
+                 mock.patch.object(encode_resumable,
+                                   "measure_quality_and_write_sidecar",
+                                   return_value=None), \
+                 mock.patch("sys.stdout"):
+                rc = encode_resumable.main()
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(captured["source"], original)
+            self.assertNotIn("source-patched", str(captured["source"]))
+
+
 class ReportUsesPassedSourceBytesTest(unittest.TestCase):
     """`write_single_file_report` must record the caller's pre-cleanup
     `source_bytes`, not a fresh `src.stat()`. Re-statting would disagree with

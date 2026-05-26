@@ -3,6 +3,21 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.3] — 2026-05-26
+
+### Fixed
+- **`on_chunk_done` notifications (e.g. Pushbullet) now show the original
+  source filename even under `--auto-patch-source`.** When a broken source is
+  rebuilt into `source-patched.mp4` (in the workdir), the hook's `X265_SOURCE`
+  was bound to that patched working copy, so notifications read
+  "source-patched.mp4" instead of the file you queued. The hook is now bound to
+  the original input — completing the same original-vs-patched correction the
+  v1.7.1 release made for the end-of-run summary and report. The encode still
+  runs against the patched copy internally; only the user-facing source name
+  changed. (The `encoding_history.jsonl` `input` block still records the
+  encoded/patched file by design, because its size feeds the live size guard —
+  unchanged here.)
+
 ## [1.7.2] — 2026-05-26
 
 A code-quality pass (readability + SOLID/DRY) plus three robustness fixes that
