@@ -3,6 +3,29 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.8.1] — 2026-05-28
+
+### Fixed
+- **`on_chunk_done` hook now reports honest overall progress.** Previously the
+  only progress signal was `X265_CHUNK_INDEX` (the just-finished chunk's
+  1-based positional id) and every shipped example computed
+  `pct = index / total`. In parallel mode chunks finish out of order — chunk
+  10 of 10 can complete before chunk 2 — so notifications reported "100%"
+  with 9 chunks of actual work left. The contract now also emits four
+  ground-truth fields derived from disk state and lazily-probed source-chunk
+  durations (cached per-process):
+  - `X265_CHUNKS_DONE` — count of `enc_*.mkv` files actually present
+  - `X265_DURATION_DONE_SEC` — encoded source seconds so far
+  - `X265_DURATION_TOTAL_SEC` — total source duration
+  - `X265_PROGRESS_PERCENT` — overall progress 0–100, clamped
+
+  `X265_CHUNK_INDEX` is preserved for back-compat but documented as
+  not-progress. Existing notification scripts keep working; updating them
+  to read `X265_PROGRESS_PERCENT` (or `X265_CHUNKS_DONE / X265_CHUNK_TOTAL`)
+  makes parallel-mode reports honest. The shipped `examples/notify_pushbullet.py`
+  and the recipes in `docs/AGENT_QUEUE_RECIPES.md` were updated to use the
+  new fields. SKILL.md's contract table now also documents them.
+
 ## [1.8.0] — 2026-05-27
 
 ### Added

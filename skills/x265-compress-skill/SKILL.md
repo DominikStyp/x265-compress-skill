@@ -488,17 +488,23 @@ A bare string (`"on_chunk_done": "/home/me/notify.sh"`) is accepted as a 1-eleme
 | `X265_SOURCE` | `/videos/a.mp4` | the source file being encoded |
 | `X265_WORKDIR` | `…/.tmp/.compress_a` | per-encode working dir |
 | `X265_CHUNK_NAME` | `src_0003.mkv` | the chunk that finished |
-| `X265_CHUNK_INDEX` | `3` | 1-based chunk position |
+| `X265_CHUNK_INDEX` | `3` | 1-based positional id of THIS chunk (NOT progress — see below) |
 | `X265_CHUNK_TOTAL` | `12` | total chunks for this file |
 | `X265_CHUNK_OUTPUT` | `…/enc_src_0003.mkv` | encoded chunk path (empty when `failed`) |
 | `X265_CHUNK_ELAPSED_SEC` | `84.21` | wall-clock seconds for that chunk |
+| `X265_CHUNKS_DONE` | `4` | chunks actually completed (ground-truth count of `enc_*.mkv` on disk) |
+| `X265_DURATION_DONE_SEC` | `240.00` | source seconds encoded so far |
+| `X265_DURATION_TOTAL_SEC` | `720.00` | source duration |
+| `X265_PROGRESS_PERCENT` | `33.3` | real overall progress, clamped 0–100. **Use this for notifications.** |
+
+> **Important — INDEX is not progress.** In parallel mode (`--parallel >1`) chunks finish out of order: chunk 10 of 10 can complete before chunk 2, so `INDEX/TOTAL` would read "100%" with 9 chunks of work left. Use `X265_PROGRESS_PERCENT` (or `X265_CHUNKS_DONE / X265_CHUNK_TOTAL`) — both come from disk ground truth and stay honest.
 
 A minimal POSIX notifier:
 
 ```bash
 #!/usr/bin/env bash
 curl -fsS -X POST https://example.test/notify \
-  -d "msg=chunk ${X265_CHUNK_INDEX}/${X265_CHUNK_TOTAL} ${X265_CHUNK_STATUS} for $(basename "$X265_SOURCE")"
+  -d "msg=chunk ${X265_CHUNK_INDEX} ${X265_CHUNK_STATUS} — ${X265_CHUNKS_DONE}/${X265_CHUNK_TOTAL} done (${X265_PROGRESS_PERCENT}%) for $(basename "$X265_SOURCE")"
 ```
 
 **Best-effort — it never derails the encode.** The hook runs with a 30 s timeout; a missing command, a non-zero exit, or a timeout is logged and ignored. Already-encoded chunks are skipped on a resumed run (so they don't re-fire); a retried failed chunk fires again.

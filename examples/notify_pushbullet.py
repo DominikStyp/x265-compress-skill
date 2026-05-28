@@ -20,8 +20,11 @@ leaked token at pushbullet.com -> Settings -> Access Tokens):
     export PUSHBULLET_TOKEN=o.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
     export PUSHBULLET_DEVICE=XXXXXXXXXXXXXXXXXXXXXX   # optional; unset = all devices
 
-Title : "Chunk-07-Done, 7/10 (70.0%)"  (or "...-FAILED" if the chunk produced
-        no output). Body: the source file name.
+Title : "Chunk-07-Done, 4/10 done (38.2%)"  — the just-finished chunk's
+        positional index, then the REAL progress: how many chunks are
+        actually done (parallel-safe) and what % of source duration that
+        is. (Or "...-FAILED" if this chunk produced no output.) Body:
+        the source file name.
 
 Exit 0 on success; non-zero on a missing token or a transport/API error, so the
 encoder logs a one-line warning (it never aborts the encode over a hook).
@@ -46,14 +49,19 @@ def build_payload(env: Mapping[str, str]) -> dict:
     than sending an empty/placeholder value."""
     index = int(env.get("X265_CHUNK_INDEX", "0") or "0")
     total = int(env.get("X265_CHUNK_TOTAL", "0") or "0")
+    done = int(env.get("X265_CHUNKS_DONE", "0") or "0")
+    pct = float(env.get("X265_PROGRESS_PERCENT", "0") or "0")
     status = env.get("X265_CHUNK_STATUS", "ok")
     source = env.get("X265_SOURCE", "")
 
-    pct = (index / total * 100.0) if total else 0.0
+    # X265_PROGRESS_PERCENT is ground-truth (counts enc_*.mkv on disk against
+    # probed source-chunk durations); INDEX is only the positional id of THIS
+    # chunk. In parallel mode the two diverge — chunk 10 may finish before
+    # chunk 2, so reporting index/total here would lie.
     word = "Done" if status == "ok" else "FAILED"
     payload = {
         "type": "note",
-        "title": f"Chunk-{index:02d}-{word}, {index}/{total} ({pct:.1f}%)",
+        "title": f"Chunk-{index:02d}-{word}, {done}/{total} done ({pct:.1f}%)",
         "body": os.path.basename(source) if source else "(unknown source)",
     }
     device = env.get("PUSHBULLET_DEVICE")

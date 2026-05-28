@@ -37,9 +37,12 @@ class _RecordingRunner:
                                      stderr=self.stderr)
 
 
-def _hook(command, runner, *, total=12, timeout=30.0):
+def _hook(command, runner, *, total=12, timeout=30.0,
+          chunks=None, total_duration_sec=0.0, duration_probe=None):
     return ChunkHook(command, source=Path("/abs/a.mp4"),
                      workdir=Path("/abs/wd"), total=total,
+                     chunks=chunks, total_duration_sec=total_duration_sec,
+                     duration_probe=duration_probe,
                      runner=runner, timeout=timeout)
 
 
@@ -107,6 +110,150 @@ class SuccessFiringTest(unittest.TestCase):
         env = runner.calls[0][1]["env"]
         self.assertEqual(env["X265_CHUNK_STATUS"], "failed")
         self.assertEqual(env["X265_CHUNK_OUTPUT"], "")
+
+
+class OverallProgressEnvTest(unittest.TestCase):
+    """The hook exposes REAL file progress — not the just-finished chunk's
+    positional index — so notification scripts compute honest percentages
+    even in parallel mode where chunks finish out of order.
+
+    Reason this test exists: before this fix the only progress signal was
+    `X265_CHUNK_INDEX`, which is the chunk's 1-based position in the source
+    timeline. In parallel encoding (e.g. --parallel 4) chunk #10 can finish
+    before chunk #2, so `X265_CHUNK_INDEX / X265_CHUNK_TOTAL` (the formula
+    every example/recipe used to suggest) reported "100%" with 9 chunks of
+    actual work left. The new vars derive from GROUND TRUTH on disk: which
+    `enc_<stem>.mkv` files actually exist, summed against probed durations.
+    """
+
+    def _chunks(self, wd, names):
+        return [wd / n for n in names]
+
+    def _make_enc(self, wd, chunk):
+        (wd / f"enc_{chunk.stem}.mkv").write_bytes(b"x")
+
+    def test_real_progress_from_disk_truth_not_chunk_index(self) -> None:
+        # Parallel scenario: chunk 10 finishes first (out of 10). Old contract
+        # would report 100% based on index; new contract reports 10% based on
+        # actual done count, because only 1 enc_*.mkv exists on disk.
+        with tempfile.TemporaryDirectory() as td:
+            wd = Path(td)
+            chunks = self._chunks(wd, [f"src_{i:04d}.mkv" for i in range(1, 11)])
+            self._make_enc(wd, chunks[9])  # chunk 10 is the only one done
+
+            runner = _RecordingRunner()
+            hook = ChunkHook(
+                ["notify"], source=Path("/abs/a.mp4"), workdir=wd, total=10,
+                chunks=chunks, total_duration_sec=600.0,
+                duration_probe=lambda p: 60.0, runner=runner,
+            )
+            hook.fire(chunk_name=chunks[9].name, index=10, status="ok",
+                      output=wd / f"enc_{chunks[9].stem}.mkv", elapsed_sec=12.0)
+            env = runner.calls[0][1]["env"]
+            self.assertEqual(env["X265_CHUNKS_DONE"], "1")
+            self.assertEqual(env["X265_CHUNK_TOTAL"], "10")
+            self.assertEqual(env["X265_DURATION_DONE_SEC"], "60.00")
+            self.assertEqual(env["X265_DURATION_TOTAL_SEC"], "600.00")
+            self.assertEqual(env["X265_PROGRESS_PERCENT"], "10.0")
+            # Old var preserved for back-compat — it's still the positional
+            # index of the just-finished chunk.
+            self.assertEqual(env["X265_CHUNK_INDEX"], "10")
+
+    def test_progress_uses_actual_durations_not_uniform_count(self) -> None:
+        # Last chunk is often shorter than --segment-seconds. Progress must
+        # reflect that, not just the count ratio.
+        with tempfile.TemporaryDirectory() as td:
+            wd = Path(td)
+            chunks = self._chunks(wd, ["src_0001.mkv", "src_0002.mkv",
+                                       "src_0003.mkv"])
+            self._make_enc(wd, chunks[0])  # done: 60s
+            self._make_enc(wd, chunks[2])  # done: 20s (last chunk, short)
+
+            durs = {chunks[0]: 60.0, chunks[1]: 60.0, chunks[2]: 20.0}
+            runner = _RecordingRunner()
+            hook = ChunkHook(
+                ["notify"], source=Path("/abs/a.mp4"), workdir=wd, total=3,
+                chunks=chunks, total_duration_sec=140.0,
+                duration_probe=lambda p: durs[p], runner=runner,
+            )
+            hook.fire(chunk_name=chunks[2].name, index=3, status="ok",
+                      output=wd / f"enc_{chunks[2].stem}.mkv", elapsed_sec=5.0)
+            env = runner.calls[0][1]["env"]
+            self.assertEqual(env["X265_CHUNKS_DONE"], "2")
+            # 60 + 20 = 80s done out of 140s -> 57.1%
+            self.assertEqual(env["X265_DURATION_DONE_SEC"], "80.00")
+            self.assertEqual(env["X265_PROGRESS_PERCENT"], "57.1")
+
+    def test_duration_probe_is_lazy_and_cached(self) -> None:
+        # Probing 30 chunks upfront would add visible startup latency on slow
+        # storage; lazy+cached lets the hook stay cheap.
+        with tempfile.TemporaryDirectory() as td:
+            wd = Path(td)
+            chunks = self._chunks(wd, [f"src_{i:04d}.mkv" for i in range(1, 4)])
+            calls: list[Path] = []
+            def probe(p):
+                calls.append(p)
+                return 60.0
+            self._make_enc(wd, chunks[0])
+            runner = _RecordingRunner()
+            hook = ChunkHook(
+                ["notify"], source=Path("/abs/a.mp4"), workdir=wd, total=3,
+                chunks=chunks, total_duration_sec=180.0,
+                duration_probe=probe, runner=runner,
+            )
+            # First fire: only chunk[0] is done -> probe called once.
+            hook.fire(chunk_name=chunks[0].name, index=1, status="ok",
+                      output=wd / f"enc_{chunks[0].stem}.mkv", elapsed_sec=1.0)
+            self.assertEqual(calls, [chunks[0]])
+            # Second fire after another chunk completes: probe called for
+            # the new one, NOT re-called for chunk[0].
+            self._make_enc(wd, chunks[1])
+            hook.fire(chunk_name=chunks[1].name, index=2, status="ok",
+                      output=wd / f"enc_{chunks[1].stem}.mkv", elapsed_sec=1.0)
+            self.assertEqual(calls, [chunks[0], chunks[1]])
+
+    def test_progress_clamps_when_total_duration_unknown(self) -> None:
+        # When the encoder couldn't tell us total_duration_sec (or chunks),
+        # the new vars degrade gracefully — never emit NaN/inf/division-by-zero.
+        with tempfile.TemporaryDirectory() as td:
+            wd = Path(td)
+            runner = _RecordingRunner()
+            # No chunks list, no total duration -> count-based fallback.
+            hook = ChunkHook(
+                ["notify"], source=Path("/abs/a.mp4"), workdir=wd, total=10,
+                chunks=None, total_duration_sec=0.0,
+                duration_probe=None, runner=runner,
+            )
+            hook.fire(chunk_name="src_0005.mkv", index=5, status="ok",
+                      output=wd / "enc_src_0005.mkv", elapsed_sec=1.0)
+            env = runner.calls[0][1]["env"]
+            # Count-based fallback: at least the just-finished chunk counts.
+            self.assertIn(env["X265_CHUNKS_DONE"], ("0", "1"))
+            self.assertEqual(env["X265_DURATION_TOTAL_SEC"], "0.00")
+            self.assertEqual(env["X265_DURATION_DONE_SEC"], "0.00")
+            # Percent falls back to count/total *10 = 50.0 (count-based).
+            self.assertEqual(env["X265_PROGRESS_PERCENT"],
+                             f"{(int(env['X265_CHUNKS_DONE'])/10)*100:.1f}")
+
+    def test_failed_chunk_does_not_count_toward_done(self) -> None:
+        # A failed chunk leaves no enc_*.mkv on disk, so it must not bump the
+        # done count or duration progress. Status is "failed" -> output blank.
+        with tempfile.TemporaryDirectory() as td:
+            wd = Path(td)
+            chunks = self._chunks(wd, ["src_0001.mkv", "src_0002.mkv"])
+            # No enc_*.mkv created
+            runner = _RecordingRunner()
+            hook = ChunkHook(
+                ["notify"], source=Path("/abs/a.mp4"), workdir=wd, total=2,
+                chunks=chunks, total_duration_sec=120.0,
+                duration_probe=lambda p: 60.0, runner=runner,
+            )
+            hook.fire(chunk_name=chunks[0].name, index=1, status="failed",
+                      output=None, elapsed_sec=0.0)
+            env = runner.calls[0][1]["env"]
+            self.assertEqual(env["X265_CHUNKS_DONE"], "0")
+            self.assertEqual(env["X265_DURATION_DONE_SEC"], "0.00")
+            self.assertEqual(env["X265_PROGRESS_PERCENT"], "0.0")
 
 
 class BestEffortNeverRaisesTest(unittest.TestCase):

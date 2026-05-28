@@ -25,12 +25,15 @@ class BuildPayloadTest(unittest.TestCase):
         self.mod = _load()
 
     def test_ok_chunk_title_body_and_no_device_by_default(self) -> None:
+        # Index is the just-finished chunk; done/percent come from the new
+        # ground-truth env vars (out-of-order parallel completions stay honest).
         p = self.mod.build_payload({
             "X265_CHUNK_INDEX": "7", "X265_CHUNK_TOTAL": "10",
+            "X265_CHUNKS_DONE": "4", "X265_PROGRESS_PERCENT": "38.2",
             "X265_CHUNK_STATUS": "ok", "X265_SOURCE": "/v/movie.mp4",
         })
         self.assertEqual(p["type"], "note")
-        self.assertEqual(p["title"], "Chunk-07-Done, 7/10 (70.0%)")
+        self.assertEqual(p["title"], "Chunk-07-Done, 4/10 done (38.2%)")
         self.assertEqual(p["body"], "movie.mp4")
         # PUSHBULLET_DEVICE unset -> omit the key entirely (push to all devices)
         self.assertNotIn("device_iden", p)
@@ -38,6 +41,7 @@ class BuildPayloadTest(unittest.TestCase):
     def test_failed_chunk_says_failed(self) -> None:
         p = self.mod.build_payload({
             "X265_CHUNK_INDEX": "3", "X265_CHUNK_TOTAL": "10",
+            "X265_CHUNKS_DONE": "0", "X265_PROGRESS_PERCENT": "0.0",
             "X265_CHUNK_STATUS": "failed", "X265_SOURCE": "/v/a.mkv",
         })
         self.assertIn("-FAILED,", p["title"])
@@ -45,14 +49,26 @@ class BuildPayloadTest(unittest.TestCase):
     def test_device_included_when_set(self) -> None:
         p = self.mod.build_payload({
             "X265_CHUNK_INDEX": "1", "X265_CHUNK_TOTAL": "2",
+            "X265_CHUNKS_DONE": "1", "X265_PROGRESS_PERCENT": "50.0",
             "X265_SOURCE": "/v/a.mkv", "PUSHBULLET_DEVICE": "DEV123",
         })
         self.assertEqual(p["device_iden"], "DEV123")
 
     def test_empty_env_no_div_by_zero(self) -> None:
         p = self.mod.build_payload({})
-        self.assertIn("0/0 (0.0%)", p["title"])
+        # Missing progress vars -> "0/0 done (0.0%)" — no crash.
+        self.assertIn("0/0 done (0.0%)", p["title"])
         self.assertEqual(p["body"], "(unknown source)")
+
+    def test_progress_reflects_real_done_not_index_in_parallel(self) -> None:
+        # Regression: parallel mode finishes chunk 10 first, but only 1 chunk
+        # is actually done. The title MUST say 1/10 (10.0%), not 10/10 (100%).
+        p = self.mod.build_payload({
+            "X265_CHUNK_INDEX": "10", "X265_CHUNK_TOTAL": "10",
+            "X265_CHUNKS_DONE": "1", "X265_PROGRESS_PERCENT": "10.0",
+            "X265_CHUNK_STATUS": "ok", "X265_SOURCE": "/v/a.mkv",
+        })
+        self.assertEqual(p["title"], "Chunk-10-Done, 1/10 done (10.0%)")
 
 
 class NoHardcodedSecretTest(unittest.TestCase):

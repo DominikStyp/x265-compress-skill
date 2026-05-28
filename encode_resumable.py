@@ -150,21 +150,26 @@ def main() -> int:
             print(f"      WARNING: on_chunk_done hook config unreadable "
                   f"({args.hooks_config}); continuing without it.",
                   file=sys.stderr)
-    # Bind the hook to the ORIGINAL src, not encode_src: on_chunk_done
-    # notifications (e.g. Pushbullet) surface X265_SOURCE to the user, who
-    # expects the source they queued — not the auto-patch's working copy
-    # (`source-patched.mp4`). The workdir/chunk paths it also reports stay
-    # correct because they're keyed off the original-stem workdir.
-    chunk_hook = ChunkHook(hook_command, source=src, workdir=workdir,
-                           total=len(chunks))
-    if chunk_hook.enabled:
-        print(f"      on_chunk_done hook: {hook_command}")
-
     total_dur = (args.total_duration_seconds
                  if args.total_duration_seconds is not None
                  else sum(probe_duration(c) for c in chunks))
     source_bytes = (args.source_bytes if args.source_bytes is not None
                     else encode_src.stat().st_size)
+
+    # Bind the hook to the ORIGINAL src, not encode_src: on_chunk_done
+    # notifications (e.g. Pushbullet) surface X265_SOURCE to the user, who
+    # expects the source they queued — not the auto-patch's working copy
+    # (`source-patched.mp4`). The workdir/chunk paths it also reports stay
+    # correct because they're keyed off the original-stem workdir.
+    # `chunks` + `total_duration_sec` + `duration_probe` power the new
+    # X265_CHUNKS_DONE / X265_PROGRESS_PERCENT contract — honest progress in
+    # parallel mode where chunks finish out of order (see chunk_hook.py).
+    chunk_hook = ChunkHook(hook_command, source=src, workdir=workdir,
+                           total=len(chunks), chunks=chunks,
+                           total_duration_sec=total_dur,
+                           duration_probe=probe_duration)
+    if chunk_hook.enabled:
+        print(f"      on_chunk_done hook: {hook_command}")
 
     init_history_state(encode_src, dst, args, source_bytes)
 

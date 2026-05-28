@@ -198,8 +198,11 @@ hook straight at it — no `curl`/`jq`, identical on Windows and POSIX:
 
 On Windows use `["python", "C:/path/to/examples/notify_pushbullet.py"]`. It reads
 `PUSHBULLET_TOKEN` (required) and `PUSHBULLET_DEVICE` (optional) from the
-environment, and pushes a note like `Chunk-07-Done, 7/10 (70.0%)` with the source
-filename as the body (`...-FAILED` for a chunk that produced no output).
+environment, and pushes a note like `Chunk-07-Done, 4/10 done (38.2%)` with the
+source filename as the body (`...-FAILED` for a chunk that produced no output).
+The index is the just-finished chunk's position; `done`/`%` come from the
+ground-truth env vars (`X265_CHUNKS_DONE`, `X265_PROGRESS_PERCENT`) so the
+report stays honest in parallel mode where chunks finish out of order.
 
 Prefer an inline shell hook instead of a separate file? Point `on_chunk_done` at
 one of these (`["bash","/home/me/notify-pushbullet.sh"]` on POSIX,
@@ -214,7 +217,9 @@ one of these (`["bash","/home/me/notify-pushbullet.sh"]` on POSIX,
 #   export PUSHBULLET_DEVICE=XXXXXXXXXXXXXXXXXXXXXX   # or delete the device_iden line to notify all devices
 set -euo pipefail
 
-pct=$(awk "BEGIN{printf \"%.1f\", 100*${X265_CHUNK_INDEX}/${X265_CHUNK_TOTAL}}")
+# X265_PROGRESS_PERCENT is the encoder's ground-truth progress (counts
+# enc_*.mkv on disk vs probed durations). X265_CHUNK_INDEX is only the
+# positional id of THIS chunk — useless as progress in parallel mode.
 name=$(basename "$X265_SOURCE")
 
 curl -fsS -X POST https://api.pushbullet.com/v2/pushes \
@@ -222,7 +227,7 @@ curl -fsS -X POST https://api.pushbullet.com/v2/pushes \
   --header 'Content-Type: application/json' \
   --data @- <<JSON
 {"type":"note",
- "title":"Chunk ${X265_CHUNK_INDEX}/${X265_CHUNK_TOTAL} ${X265_CHUNK_STATUS} (${pct}%)",
+ "title":"Chunk ${X265_CHUNK_INDEX} ${X265_CHUNK_STATUS} — ${X265_CHUNKS_DONE}/${X265_CHUNK_TOTAL} done (${X265_PROGRESS_PERCENT}%)",
  "body":"${name}",
  "device_iden":"${PUSHBULLET_DEVICE}"}
 JSON
@@ -234,10 +239,12 @@ Windows — `"on_chunk_done": ["pwsh", "-File", "C:/tools/notify-pushbullet.ps1"
 # notify-pushbullet.ps1 — token + device from the environment, never the file:
 #   $env:PUSHBULLET_TOKEN, $env:PUSHBULLET_DEVICE  (drop device_iden to notify all devices)
 $ErrorActionPreference = 'Stop'
-$pct  = [math]::Round(100 * [int]$env:X265_CHUNK_INDEX / [int]$env:X265_CHUNK_TOTAL, 1)
+# Ground truth (X265_PROGRESS_PERCENT / X265_CHUNKS_DONE) — NOT INDEX —
+# is what to report as progress. INDEX is only the positional id of the
+# just-finished chunk, which is misleading in parallel mode.
 $payload = @{
     type        = 'note'
-    title       = "Chunk $($env:X265_CHUNK_INDEX)/$($env:X265_CHUNK_TOTAL) $($env:X265_CHUNK_STATUS) ($pct%)"
+    title       = "Chunk $($env:X265_CHUNK_INDEX) $($env:X265_CHUNK_STATUS) — $($env:X265_CHUNKS_DONE)/$($env:X265_CHUNK_TOTAL) done ($($env:X265_PROGRESS_PERCENT)%)"
     body        = [IO.Path]::GetFileName($env:X265_SOURCE)
     device_iden = $env:PUSHBULLET_DEVICE
 } | ConvertTo-Json -Compress
@@ -246,11 +253,18 @@ Invoke-RestMethod -Method Post -Uri 'https://api.pushbullet.com/v2/pushes' `
     -ContentType 'application/json' -Body $payload
 ```
 
-Each finished chunk pushes a note like **"Chunk 7/10 ok (70.0%)"** with the source
-filename as the body. `X265_CHUNK_STATUS` is `failed` for a chunk that produced no
-output, so you're alerted to problems too — not just progress. The hook is
-best-effort: if Pushbullet is down, the `curl` failure is logged and the encode
-keeps going.
+Each finished chunk pushes a note like **"Chunk 7 ok — 4/10 done (38.2%)"** with
+the source filename as the body. `X265_CHUNK_STATUS` is `failed` for a chunk
+that produced no output, so you're alerted to problems too — not just progress.
+The hook is best-effort: if Pushbullet is down, the `curl` failure is logged and
+the encode keeps going.
+
+> **Why `X265_CHUNKS_DONE` and `X265_PROGRESS_PERCENT` and not `X265_CHUNK_INDEX`
+> / `X265_CHUNK_TOTAL`?** In parallel mode (`--parallel >1`) chunks finish out
+> of order: chunk 10 of 10 may complete before chunk 2. `INDEX/TOTAL` would
+> then read "100%" with 9 chunks of work left. `CHUNKS_DONE` and
+> `PROGRESS_PERCENT` are derived from disk ground truth (which `enc_*.mkv`
+> exist) summed against actual chunk durations, so they stay honest.
 
 ---
 

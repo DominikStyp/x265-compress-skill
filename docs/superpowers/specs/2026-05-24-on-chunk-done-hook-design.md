@@ -75,12 +75,23 @@ encode_resumable.py --hooks-config <path>
 | `X265_SOURCE` | `/abs/a.mp4` | source video |
 | `X265_WORKDIR` | `/abs/.tmp/.compress_a` | |
 | `X265_CHUNK_NAME` | `src_0003.mkv` | chunk file name |
-| `X265_CHUNK_INDEX` | `3` | 1-based original position |
+| `X265_CHUNK_INDEX` | `3` | 1-based original position of THIS chunk (NOT progress) |
 | `X265_CHUNK_TOTAL` | `12` | |
 | `X265_CHUNK_OUTPUT` | `…/enc_src_0003.mkv` | empty string if `failed` |
 | `X265_CHUNK_ELAPSED_SEC` | `84.21` | wall seconds, 2dp |
+| `X265_CHUNKS_DONE` | `4` | chunks completed so far (disk ground truth) |
+| `X265_DURATION_DONE_SEC` | `240.00` | source seconds encoded so far |
+| `X265_DURATION_TOTAL_SEC` | `720.00` | source duration |
+| `X265_PROGRESS_PERCENT` | `33.3` | overall progress 0–100, clamped |
 
 All values are strings. The hook process inherits `os.environ` plus these.
+
+> The overall-progress fields were added because parallel mode can finish
+> chunks out of order (chunk 10 may complete before chunk 2), making
+> `INDEX/TOTAL` a meaningless "percentage". `X265_CHUNKS_DONE` /
+> `X265_DURATION_DONE_SEC` / `X265_PROGRESS_PERCENT` are derived from disk
+> ground truth + cached `probe_duration` calls, so they're honest in both
+> parallel and serial mode.
 
 ## Fire semantics (safety-first)
 
