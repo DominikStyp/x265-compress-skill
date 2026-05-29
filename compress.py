@@ -110,6 +110,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--no-pause", action="store_true",
                     help="Skip the trailing `pause` in the generated .bat. "
                          "Set by run_queue.py so per-job bats don't block.")
+    ap.add_argument("--done-dir", default=None, metavar="PATH",
+                    help="With --resumable, after a successful encode move "
+                         "BOTH source and output into PATH. Supports `~` "
+                         "expansion; relative paths resolve against the "
+                         "source's directory (single-file) or the queue's "
+                         "directory (queue mode). The directory is created if "
+                         "missing. Refuses to move into a workdir subtree or "
+                         "overwrite an existing destination. Only fires on "
+                         "status == ok; every other status leaves files in "
+                         "place.")
     return ap
 
 
@@ -242,6 +252,18 @@ def main() -> int:
                   "history flush).", file=sys.stderr)
             file_complete_command = None
 
+    # Resolve --done-dir against the source's directory in single-file mode.
+    # Queue mode overrides this resolution by setting an ABSOLUTE path in the
+    # done_dir argv (queue_modules.job_schema), so the queue's resolution
+    # (relative to queue.json's dir) is what wins there.
+    done_dir: str | None = None
+    if args.done_dir:
+        if not args.resumable:
+            print("WARNING: --done-dir ignored without --resumable.",
+                  file=sys.stderr)
+        else:
+            done_dir = args.done_dir
+
     write_script(
         info, plan, source_path,
         resumable=args.resumable, segment_seconds=segment_seconds,
@@ -257,6 +279,7 @@ def main() -> int:
         on_chunk_done=hook_command,
         on_job_end=job_end_command,
         on_file_complete=file_complete_command,
+        done_dir=done_dir,
     )
 
     print(json.dumps({
@@ -283,6 +306,7 @@ def main() -> int:
         "on_chunk_done": hook_command,
         "on_job_end": job_end_command,
         "on_file_complete": file_complete_command,
+        "done_dir": done_dir,
     }, indent=2, ensure_ascii=False))
     return 0
 

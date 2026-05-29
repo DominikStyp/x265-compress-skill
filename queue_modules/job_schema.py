@@ -36,6 +36,7 @@ VALID_KEYS: set[str] = {
     "on_chunk_done",
     "on_job_end",
     "on_file_complete",
+    "done_dir",
     # Queue-only keys (consumed by the queue runner, NOT forwarded to
     # compress.py argv): auto-escalate CRF when the size guard stops a job.
     "retry_with_bigger_crf",
@@ -113,6 +114,11 @@ def build_compress_argv(job: dict) -> list[str]:
     if cmd_fc:
         argv += ["--on-file-complete",
                  json.dumps(cmd_fc if isinstance(cmd_fc, list) else [cmd_fc])]
+    # done_dir is pre-resolved to an absolute path by run_queue.py (relative
+    # to the queue.json's dir, per the spec — NOT to the source's dir). The
+    # encoder then takes it as-is via --done-dir.
+    if job.get("done_dir"):
+        argv += ["--done-dir", str(job["done_dir"])]
     # In queue mode the default is resumable=true (kills survive, partial
     # work is preserved). Set "resumable": false in JSON to opt out.
     if job.get("resumable", True):

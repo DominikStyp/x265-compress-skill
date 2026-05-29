@@ -620,6 +620,44 @@ curl -fsS -X POST https://example.test/notify -d "title=${title}&body=${src}"
 
 Same best-effort discipline. The three hooks (`on_chunk_done`, `on_job_end`, `on_file_complete`) are independent — configure any subset.
 
+### Archive a finished pair (`done_dir`)
+
+Set `done_dir` in a queue's `defaults` or per job (or `--done-dir` on `compress.py`) to move BOTH source and output into an archive directory after a successful encode. Only fires on `status == "ok"` — every other status leaves the files in place so they can be re-run.
+
+```json
+{
+  "defaults": { "done_dir": "./done" },
+  "jobs":  [ {"input": "movie.mp4"} ]
+}
+```
+
+**Resolution rules:**
+- `~` and `~user` expand.
+- Absolute paths used as-is.
+- Relative paths resolve against the **queue.json's directory** (queue mode) or the **source's directory** (single-file mode).
+- `mkdir(parents=True, exist_ok=True)` at startup, so a permissions / read-only-FS error fires before the encode, not after a multi-hour run.
+
+**Safety:**
+- Refuses to overwrite an existing destination (renames must be manual).
+- Refuses to move INTO a workdir subtree (cleanup would eat the result).
+- Same directory as the source → no-op (skip the move, don't error).
+- Cross-volume safe via `shutil.move` (copy+delete if same-volume fails).
+- The output is moved FIRST, source SECOND — a step-2 failure leaves source intact + output in `done_dir`, recoverable.
+
+**Sidecar policy:**
+- `<stem>.quality.json` stays in `.tmp/` (downstream tooling looks there).
+- `<stem>.preflight.json` stays in `.tmp/` (content-keyed cache; useful on a future re-encode of the same source).
+- `<stem>.hooks.json` is deleted (per-job artifact, no value after the move).
+
+### Persistent queue state (`<queue_stem>.state.json`)
+
+When `done_dir` moves a source away from the path in `queue.json`, the next run would (without state) see "input not found" and emit `skipped-not-found` — looking like an error. The state sidecar records every successful completion (with `input_original`, `moved_to_dir`, `input_final`, `crf_final`, sizes, wall time) so the next run can silently skip with status `skipped-done` (added to `_CLEAN_STATUSES`, exit code stays 0).
+
+- Sidecar lives next to `queue.json` as `<queue_stem>.state.json` (schema_version 1, atomic write).
+- `run_queue.py --reset-state` deletes the sidecar so a queue can be re-attempted from scratch without editing JSON.
+- Foreign inputs (state records for jobs no longer in `queue.json`) are preserved — the user may re-add the row later.
+- Corrupt or unknown-schema-version sidecars degrade to empty state (no crash mid-run).
+
 ### Launcher (`run_queue.bat`)
 
 **Whenever you write a `queue.json`, also write a `run_queue.bat` next to it** so the user can start the encode by double-clicking instead of typing the python invocation. Use this exact template, saved UTF-8 without BOM and with **CRLF (Windows) line endings** — cmd.exe mis-parses LF-only .bat files, dropping leading characters per line (`chcp`→`cp`, `title`→`tle`):

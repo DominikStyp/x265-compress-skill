@@ -123,8 +123,15 @@ def build_job_row(*, input_path: Path, out_path: Path,
                  status: str, elapsed: float,
                  summary: dict | None) -> dict:
     """Build the per-job dict for the aggregate report. Includes quality
-    scores from the sidecar when status == 'ok' and the sidecar exists."""
-    output_bytes = out_path.stat().st_size if out_path.exists() else None
+    scores from the sidecar when status == 'ok' and the sidecar exists.
+
+    `done_dir` post-move: when the encoder moved source+output away from
+    their derived paths, `out_path.stat()` would return None and the row
+    would lose its output size + savings. We detect the move by stat-ing
+    the configured done_dir's destination and use that path instead. The
+    quality sidecar lives in `<out_path.parent>/.tmp/` and is NOT moved
+    by `done_dir`, so it's still found at the original location."""
+    output_bytes = _resolve_output_bytes(out_path, merged)
     plan = (summary or {}).get("plan") or {}
     row: dict = {
         "input": str(input_path),
@@ -147,6 +154,20 @@ def build_job_row(*, input_path: Path, out_path: Path,
             row["ssim_mean"] = q.get("ssim_mean")
             row["quality_method"] = q.get("method")
     return row
+
+
+def _resolve_output_bytes(out_path: Path, merged: dict) -> int | None:
+    """Return the actual output file size, handling the case where
+    `done_dir` moved the output away from `out_path`. Falls back to the
+    original path stat (failed-move case) or None (genuinely missing)."""
+    if out_path.exists():
+        return out_path.stat().st_size
+    done_dir = merged.get("done_dir")
+    if done_dir:
+        moved = Path(done_dir) / out_path.name
+        if moved.exists():
+            return moved.stat().st_size
+    return None
 
 
 def run_one_job(*, compress_py: Path, merged: dict,

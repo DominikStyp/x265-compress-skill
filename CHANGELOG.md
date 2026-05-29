@@ -3,6 +3,37 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.11.0] — 2026-05-29
+
+### Added
+- **`done_dir` — archive source+output after a successful encode.**
+  Optional opt-in via `--done-dir PATH` on `compress.py` or `done_dir` in
+  queue.json `defaults` / per job. Moves BOTH source `.mp4` AND output
+  `.mkv` into the directory after `status == "ok"`. `~` expansion;
+  relative paths resolve against the queue.json's directory (queue mode)
+  or the source's directory (single-file). Cross-volume safe via
+  `shutil.move`. Refuses to overwrite an existing destination, refuses to
+  move into a workdir subtree (cleanup would eat the result), treats a
+  same-directory done_dir as a no-op. Output is moved FIRST, source
+  SECOND — a step-2 failure leaves source intact + output in done_dir
+  (recoverable, no data loss).
+
+- **Persistent queue state — `<queue_stem>.state.json` sidecar.**
+  Records every `ok` completion (input_original / moved_to_dir /
+  input_final / sizes / wall) so a re-run can silently skip with status
+  `skipped-done` (new clean status, exit code stays 0). Without this, a
+  `done_dir`-moved source would show up as `skipped-not-found` on the next
+  run and bump the queue's exit code to 2. Schema versioned (v1), atomic
+  write, degrades to empty on corruption / unknown schema. New
+  `run_queue.py --reset-state` flag deletes the sidecar for a clean
+  re-attempt. The state row's `moved_to_dir` is set ONLY when disk truth
+  confirms both source and output arrived at the configured done_dir —
+  protects against a refused/failed move silently poisoning the next
+  run's skip logic. The queue runner's aggregate report also picks up
+  the moved output's byte count via a stat-fallback to the done_dir
+  location, so a successful move doesn't leave "0 bytes saved" in the
+  summary.
+
 ## [1.10.0] — 2026-05-29
 
 ### Added

@@ -33,11 +33,16 @@ from pathlib import Path
 
 import time
 
+from encode_modules.done_dir import resolve_done_dir
 from platform_compat import enable_utf8_io
 from queue_modules.job_runner import run_job_with_crf_retry
 from queue_modules.job_schema import derive_output_path, merge_job
 from queue_modules.queue_counters import compute_queue_counters, overlay_env
 from queue_modules.queue_io import reload_queue_with_retry
+from queue_modules.queue_state import (
+    delete_queue_state,
+    load_queue_state,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -53,15 +58,49 @@ def _parse_args() -> argparse.Namespace:
                     help="Append one NDJSON record per finished job to PATH "
                          "(machine-readable; stdout stays human-readable). "
                          "Tail it to watch a queue run live.")
+    ap.add_argument("--reset-state", action="store_true",
+                    help="Delete the queue's persistent state sidecar "
+                         "(<queue_stem>.state.json) before starting. Use to "
+                         "re-attempt jobs that were marked done in a "
+                         "previous run.")
     return ap.parse_args()
 
 
 def _skip_if_missing_or_existing(merged: dict, *, i: int, n: int,
-                                no_skip_existing: bool) -> dict | None:
+                                no_skip_existing: bool,
+                                state=None) -> dict | None:
     """Pre-encode skip checks. Returns a placeholder report row if the job
     should be skipped (and prints the SKIP line); None if encoding should
-    proceed."""
+    proceed.
+
+    Order of checks:
+      1. STATE: this job's `input_original` is in the state sidecar → clean
+         skip (status `skipped-done`). Takes precedence over the input-missing
+         check so a moved-via-done_dir source doesn't look like a missing
+         input.
+      2. INPUT MISSING: degrades to skipped-not-found (attention status —
+         user typo / mount problem).
+      3. OUTPUT EXISTS: same-directory clean skip (status `skipped-exists`).
+    """
     input_path = Path(merged["input"])
+    if state is not None and state.is_completed(input_path):
+        rec = state.get(input_path) or {}
+        moved_to = rec.get("moved_to_dir")
+        location = (f" (moved to {moved_to})" if moved_to
+                    else " (completed in place)")
+        print(f"[{i}/{n}] SKIP — already done{location}")
+        return {
+            "input": str(input_path),
+            "output": rec.get("output_final") or rec.get("output_original"),
+            "input_bytes": rec.get("bytes_in", 0) or 0,
+            "output_bytes": rec.get("bytes_out"),
+            "crf": rec.get("crf_final") or merged.get("crf"),
+            "preset": merged.get("preset"),
+            "parallel": merged.get("parallel"),
+            "max_size_percent": merged.get("max_size_percent"),
+            "elapsed_seconds": rec.get("wall_seconds"),
+            "status": "skipped-done",
+        }
     if not input_path.is_file():
         print(f"[{i}/{n}] SKIP — input not found: {input_path}")
         return {
@@ -135,7 +174,7 @@ def _write_aggregate_reports(skill_dir: Path, queue_path: Path,
 # Per-job status -> aggregate category for the process exit code. "clean":
 # nothing to do. "attention": the encode ran but left a state needing a human
 # decision. Anything else is treated as a real failure (fail-safe).
-_CLEAN_STATUSES = {"ok", "skipped-exists"}
+_CLEAN_STATUSES = {"ok", "skipped-exists", "skipped-done"}
 _ATTENTION_STATUSES = {
     "stopped-threshold", "stopped-threshold-crf-exhausted",
     "awaiting-chunk-fix", "skipped-not-found",
@@ -192,6 +231,66 @@ def _emit_json_status(path, row: dict) -> None:
         print(f"WARNING: --json-status write failed: {e}", file=sys.stderr)
 
 
+def _record_completion(queue_state, queue_path: Path, row: dict,
+                       merged: dict) -> None:
+    """Append the just-finished ok job to the state sidecar + flush. Failure
+    here is a logged warning — losing the state record is bad UX but never
+    worth aborting the queue.
+
+    Move-outcome verification: when the job had a done_dir, we VERIFY the
+    files actually arrived before recording `moved_to_dir`. The encoder's
+    move can fail (DoneDirRefusedError, OSError mid-copy) and the encoder
+    still exits 0 because the encode itself succeeded — without this check
+    we'd persist `moved_to_dir = <configured>` and the next run's skip
+    logic would silently swallow a job whose files are still at the
+    original path. Truth comes from disk."""
+    try:
+        input_path = Path(row["input"]).resolve()
+        output_original = derive_output_path(input_path)
+        done_dir_cfg = merged.get("done_dir")
+        moved_to, input_final, output_final = _verify_move_outcome(
+            done_dir_cfg, input_path, output_original)
+        from datetime import datetime, timezone
+        queue_state.add_completed(
+            input_original=input_path,
+            output_original=output_original,
+            moved_to_dir=moved_to,
+            input_final=input_final,
+            output_final=output_final,
+            crf_final=row.get("crf"),
+            bytes_in=row.get("input_bytes"),
+            bytes_out=row.get("output_bytes"),
+            wall_seconds=row.get("elapsed_seconds"),
+            completed_utc=datetime.now(timezone.utc)
+                                  .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        queue_state.save_atomically(queue_path)
+    except Exception as e:
+        print(f"WARNING: state sidecar update failed: {e}", file=sys.stderr)
+
+
+def _verify_move_outcome(done_dir_cfg, input_path: Path,
+                         output_original: Path):
+    """Look at disk truth: are source+output at done_dir, or still at the
+    original location? Returns (moved_to_dir, input_final, output_final)
+    with all three set when the move succeeded, all three None when no
+    done_dir was configured OR the move was refused/failed.
+
+    A partial state (output moved but source not) is recorded conservatively
+    as "no move" — the state sidecar's invariant is "if moved_to_dir is set,
+    BOTH paths are at that location"; the next run will re-encode (which
+    triggers the encoder's refuse-to-overwrite guard, which the user can
+    resolve)."""
+    if not done_dir_cfg:
+        return None, None, None
+    done_dir = Path(done_dir_cfg)
+    input_at_done = done_dir / input_path.name
+    output_at_done = done_dir / output_original.name
+    if input_at_done.exists() and output_at_done.exists():
+        return done_dir, input_at_done, output_at_done
+    return None, None, None
+
+
 def _should_halt_after(status: str, stop_on_failure: bool) -> bool:
     """Whether to stop launching further queue jobs after a job ended with
     `status`. A user-requested finish (`stopped-by-user`) always halts the
@@ -214,7 +313,16 @@ def main() -> int:
     if not compress_py.is_file():
         sys.exit(f"ERROR: compress.py missing at {compress_py}")
 
+    if args.reset_state:
+        delete_queue_state(queue_path)
+        print(f"Queue: state sidecar cleared "
+              f"({queue_path.stem}.state.json).")
+
     print(f"Queue: live-reloading {queue_path} before each job.")
+    queue_state = load_queue_state(queue_path)
+    if queue_state.completed:
+        print(f"Queue: state sidecar records "
+              f"{len(queue_state.completed)} previously-completed job(s).")
     if args.json_status:
         # Truncate up front so a re-run starts a clean per-run status stream.
         try:
@@ -271,9 +379,26 @@ def main() -> int:
         job_counter += 1
         merged = merge_job(defaults, next_job)
 
+        # Resolve per-job done_dir against the queue file's directory (the
+        # spec calls for queue-relative resolution so a queue copied to a
+        # different machine doesn't depend on shell cwd). Mutates the merged
+        # dict so the resolved absolute path travels into build_compress_argv.
+        if merged.get("done_dir"):
+            try:
+                resolved = resolve_done_dir(str(merged["done_dir"]),
+                                            base_dir=queue_path.parent)
+                if resolved is not None:
+                    merged["done_dir"] = str(resolved)
+            except OSError as e:
+                print(f"WARNING: done_dir for job {job_counter} could not "
+                      f"be created ({e}); dropping for this job.",
+                      file=sys.stderr)
+                merged.pop("done_dir", None)
+
         skip_row = _skip_if_missing_or_existing(
             merged, i=job_counter, n=len(seen_inputs),
             no_skip_existing=args.no_skip_existing,
+            state=queue_state,
         )
         if skip_row is not None:
             job_reports.append(skip_row)
@@ -299,6 +424,13 @@ def main() -> int:
         job_reports.append(row)
         if args.json_status:
             _emit_json_status(args.json_status, row)
+        # Persist the completion to the state sidecar AFTER the run finishes,
+        # so a kill mid-run never records a half-done job as completed.
+        # done_dir-moved jobs are recorded with their final paths so a re-run
+        # finds them via state lookup (the input path in queue.json no longer
+        # exists on disk).
+        if status == "ok":
+            _record_completion(queue_state, queue_path, row, merged)
 
         if _should_halt_after(status, args.stop_on_failure):
             if status == "stopped-by-user":

@@ -52,6 +52,12 @@ def _add_pipeline_args(ap: argparse.ArgumentParser) -> None:
                     help="Path to the JSON sidecar holding the on_chunk_done "
                          "hook command (written by compress.py). Internal "
                          "plumbing — users set --on-chunk-done on compress.py.")
+    ap.add_argument("--done-dir", default=None,
+                    help="If set, after a successful encode move BOTH source "
+                         "and output into this directory (must be already "
+                         "resolved to an absolute path by compress.py). Only "
+                         "moves on status == ok; refuses to overwrite an "
+                         "existing destination or move into the workdir.")
 
 
 def _add_quality_args(ap: argparse.ArgumentParser) -> None:

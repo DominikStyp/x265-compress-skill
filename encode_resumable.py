@@ -29,6 +29,11 @@ from pathlib import Path
 from encode_modules.chunk_hook import ChunkHook
 from encode_modules.chunking import cleanup, reorder_middle_first, split_source
 from encode_modules.cli_args import parse_args
+from encode_modules.done_dir import (
+    DoneDirRefusedError,
+    move_to_done_dir,
+    resolve_done_dir,
+)
 from encode_modules.file_complete_hook import FileCompleteHook
 from encode_modules.finish_signal import FINISH_FILENAME
 from encode_modules.hook_config import load_hooks_sidecar
@@ -225,13 +230,41 @@ def main() -> int:
 
     ensure_not_source(workdir)
     cleanup(workdir)
-    # Report against the ORIGINAL source (`src`), not `encode_src`: the latter
-    # may be the patched copy that cleanup() just deleted with the workdir.
-    print_summary(src, dst, quality_scores)
+
+    # --done-dir post-processing: after cleanup, when the user asked for an
+    # archive, move source + output. Always after cleanup so a failure to
+    # move can't leave the workdir lingering. resolve_done_dir mkdir's the
+    # destination at startup so any "directory doesn't exist" error fires
+    # before the encode, not after.
+    final_src = src
+    final_dst = dst
+    if getattr(args, "done_dir", None):
+        try:
+            resolved_done = resolve_done_dir(args.done_dir,
+                                              base_dir=src.parent)
+            if resolved_done is not None:
+                result = move_to_done_dir(
+                    source=src, output=dst,
+                    done_dir=resolved_done, workdir=workdir,
+                    sidecar_dir=workdir.parent,
+                )
+                if result.moved:
+                    print(f"      Moved source+output to: {resolved_done}")
+                    final_src = result.source_final
+                    final_dst = result.output_final
+        except DoneDirRefusedError as e:
+            print(f"WARNING: --done-dir move refused: {e}", file=sys.stderr)
+        except OSError as e:
+            # A cross-volume move can fail (e.g. ENOSPC mid-copy). Source is
+            # guaranteed intact by the output-first ordering.
+            print(f"WARNING: --done-dir move failed: {e}", file=sys.stderr)
+    # Report against the FINAL paths so the user sees where the files actually
+    # ended up. Falls back to the original src/dst when no move occurred.
+    print_summary(final_src, final_dst, quality_scores)
 
     if not args.no_report:
         write_single_file_report(
-            src, dst,
+            final_src, final_dst,
             args=args, source_bytes=source_bytes,
             elapsed_s=elapsed, quality_scores=quality_scores,
         )
