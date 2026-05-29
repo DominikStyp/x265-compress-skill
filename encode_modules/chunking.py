@@ -18,6 +18,7 @@ from pathlib import Path
 
 from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
+from .concat_list import concat_list_lines
 from .probes import probe_duration
 from .progress_bar import ProgressBar, read_ffmpeg_progress
 
@@ -188,11 +189,10 @@ def concat_chunks(workdir: Path, dst: Path, *,
     if not encs:
         sys.exit("ERROR: no encoded chunks to concatenate")
     concat_list = workdir / "concat.txt"
-    # ffmpeg concat demuxer wants forward-slash paths inside single quotes.
-    concat_list.write_text(
-        "\n".join(f"file '{c.resolve().as_posix()}'" for c in encs) + "\n",
-        encoding="utf-8",
-    )
+    # Concat-line escaping (apostrophes!) lives in concat_list_lines — see
+    # encode_modules/concat_list.py for why the naive `file '{path}'` form
+    # breaks on any workdir containing `'`.
+    concat_list.write_text(concat_list_lines(encs), encoding="utf-8")
     if total_dur is None:
         total_dur = sum(probe_duration(c) for c in encs)
     # -fflags +genpts regenerates clean monotonic PTS/DTS during the

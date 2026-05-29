@@ -3,6 +3,22 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.8.2] — 2026-05-29
+
+### Fixed
+- **`concat.txt` fails with exit 254 on any path containing an apostrophe.**
+  ffmpeg's concat demuxer parses `file '<path>'` as single-quoted, and inside
+  the quotes an apostrophe must be written as `'\''` — the previous writers
+  interpolated paths directly, so any workdir whose name carried `'`
+  (possessives: `O'Brien`, `DP'd in Gym`, …) wrote a broken concat.txt and
+  ffmpeg failed at finalize. The escaping logic now lives in a single shared
+  helper (`encode_modules/concat_list.py`) that both `chunking.concat_chunks`
+  and `source_patcher` route through; defensive regression tests prevent
+  either writer from drifting back to a hand-rolled `f"file '{path}'"`
+  template. Half-finished workdirs from v1.8.0/1.8.1 are picked up
+  transparently — `concat.txt` is rewritten on every run, so the upgraded
+  encoder just produces a correct file in place.
+
 ## [1.8.1] — 2026-05-28
 
 ### Fixed

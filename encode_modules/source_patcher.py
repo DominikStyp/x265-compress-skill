@@ -42,6 +42,7 @@ from typing import Optional
 
 from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
+from .concat_list import concat_list_lines
 from .probes import probe_duration
 
 # A metadata probe returns near-instantly; this only fires on a wedged ffprobe.
@@ -327,10 +328,9 @@ def auto_patch_source(
             return None
 
     list_file = patch_dir / "concat_list.txt"
-    list_file.write_text(
-        "\n".join(f"file '{t.resolve().as_posix()}'" for t in ts_files) + "\n",
-        encoding="utf-8",
-    )
+    # Same apostrophe-escape requirement as chunking.concat_chunks — both
+    # writers must route through concat_list_lines so they can't drift.
+    list_file.write_text(concat_list_lines(ts_files), encoding="utf-8")
 
     out_mp4 = workdir / "source-patched.mp4"
     concat_args = [
