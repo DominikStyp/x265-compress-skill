@@ -3,6 +3,36 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.10.0] — 2026-05-29
+
+### Added
+- **`on_file_complete` hook — fires success-only with queue-level counter
+  context.** Companion to `on_job_end` (which fires for ANY terminal status):
+  this one fires ONLY on `status == "ok"` AND ONLY when the final `.mkv` is
+  on disk, so notification scripts can assume "if it fired, the file is
+  ready". Fires from `HistoryRecorder.flush()` AFTER `on_job_end` (which
+  itself runs after the JSONL audit row lands on disk) — so a slow
+  file-complete celebration push can't delay the job-end alert.
+
+  Per-file env: `X265_SOURCE`, `X265_OUTPUT`, `X265_SOURCE_BYTES`,
+  `X265_OUTPUT_BYTES`, `X265_PCT_SAVED`, `X265_WALL_SECONDS`, `X265_CRF`,
+  `X265_CRF_RETRY_CHAIN`, `X265_VMAF_MEAN`.
+
+  Queue-level env (set by `run_queue.py` per spawn, inherits straight
+  through cmd → bat → python → hook subprocess via standard env
+  inheritance): `X265_QUEUE_INDEX`, `X265_QUEUE_TOTAL`,
+  `X265_QUEUE_ITEMS_FINISHED` (inclusive of just-finished job),
+  `X265_QUEUE_ITEMS_REMAINING/FAILED/STOPPED/SKIPPED`,
+  `X265_QUEUE_BYTES_IN_SO_FAR`, `X265_QUEUE_BYTES_OUT_SO_FAR`,
+  `X265_QUEUE_PCT_SAVED_SO_FAR`, `X265_QUEUE_WALL_SECONDS`. Per-run scope
+  (resets every `run_queue.py` invocation). Single-file `compress.py` mode
+  populates degraded `1/1/0/0` defaults so the same hook script works in
+  both modes without a queue-presence branch.
+
+  Configured via CLI `--on-file-complete`, queue.json `on_file_complete`
+  key, or the `<stem>.hooks.json` sidecar (now carrying all three hook
+  keys). Existing single-key v1.8.x sidecars still load on resume.
+
 ## [1.9.0] — 2026-05-29
 
 ### Added

@@ -29,9 +29,11 @@ from pathlib import Path
 from encode_modules.chunk_hook import ChunkHook
 from encode_modules.chunking import cleanup, reorder_middle_first, split_source
 from encode_modules.cli_args import parse_args
+from encode_modules.file_complete_hook import FileCompleteHook
 from encode_modules.finish_signal import FINISH_FILENAME
 from encode_modules.hook_config import load_hooks_sidecar
 from encode_modules.history_state import (
+    attach_file_complete_hook,
     attach_job_end_hook,
     finalize_history_state,
     init_history_state,
@@ -126,11 +128,14 @@ def main() -> int:
 
     run_start = time.monotonic()
 
-    # Read & attach the on_job_end hook EARLY — before pre-flight runs — so
-    # a pre-flight failure also fires the notification. The chunk hook can't
-    # be built yet (it needs the chunks list + total duration), so we defer
-    # that until after chunking; job_end only needs src/workdir.
+    # Read & attach the on_job_end / on_file_complete hooks EARLY — before
+    # pre-flight runs — so a pre-flight failure also fires on_job_end (the
+    # file_complete hook is success-only and won't fire on pre-flight fail,
+    # which is the right behaviour). The chunk hook can't be built yet (it
+    # needs the chunks list + total duration), so we defer that until after
+    # chunking; the job-level hooks only need src/workdir.
     job_end_command = None
+    file_complete_command = None
     chunk_hook_command = None
     if args.hooks_config:
         hooks = load_hooks_sidecar(Path(args.hooks_config))
@@ -141,10 +146,16 @@ def main() -> int:
         else:
             chunk_hook_command = hooks.get("on_chunk_done")
             job_end_command = hooks.get("on_job_end")
+            file_complete_command = hooks.get("on_file_complete")
     job_end_hook = JobEndHook(job_end_command, source=src, workdir=workdir)
     attach_job_end_hook(job_end_hook)
+    file_complete_hook = FileCompleteHook(file_complete_command,
+                                          source=src, workdir=workdir)
+    attach_file_complete_hook(file_complete_hook)
     if job_end_hook.enabled:
         print(f"      on_job_end hook: {job_end_command}")
+    if file_complete_hook.enabled:
+        print(f"      on_file_complete hook: {file_complete_command}")
 
     # Pre-flight + optional auto-patch. Bail before any chunking work if
     # the source is unsafe to encode. `encode_src` is what the pipeline

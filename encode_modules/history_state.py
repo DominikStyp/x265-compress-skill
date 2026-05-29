@@ -30,6 +30,7 @@ import threading
 from pathlib import Path
 
 import history as _hist
+from .file_complete_hook import FileCompleteHook
 from .job_end_hook import JobEndHook
 from .probes import probe_full
 
@@ -59,6 +60,9 @@ class HistoryRecorder:
         # reading the sidecar; None means "no job-end hook configured". Fires
         # exactly once, right after the JSONL record lands in flush().
         self._job_end_hook: JobEndHook | None = None
+        # on_file_complete hook (optional). Success-only — fires from flush()
+        # BEFORE the job-end hook when status == "ok" AND output exists.
+        self._file_complete_hook: FileCompleteHook | None = None
         # Static job-end context the encoder hands in alongside the hook.
         # Most fields are derivable from `self.current` after finalize, but
         # threshold-aborts populate them earlier (so they survive the atexit
@@ -179,6 +183,12 @@ class HistoryRecorder:
         the final status. None disables the hook (the default)."""
         self._job_end_hook = hook
 
+    def attach_file_complete_hook(self,
+                                  hook: FileCompleteHook | None) -> None:
+        """Wire the on_file_complete hook so flush() fires it BEFORE
+        on_job_end on the `ok` path (and skips it otherwise). None disables."""
+        self._file_complete_hook = hook
+
     def set_stop_context(self, *,
                          reason: str = "",
                          detail: str = "",
@@ -212,13 +222,22 @@ class HistoryRecorder:
             self.written = True
         except Exception as e:
             print(f"WARNING: history flush failed: {e}", file=sys.stderr)
-        # Fire on_job_end LAST so the audit trail is always on disk first.
-        # Wrapped in its own try because the hook's no-raise contract is
-        # belt-and-suspenders — anything escaping here would crash atexit.
+        # Fire hooks AFTER the audit row is on disk. Order: job_end first
+        # (fires for every terminal status; carries reason/detail) so a slow
+        # file-complete celebration push can't delay the job-end alert.
+        # file_complete second (success-only; the "ready for next step"
+        # notification). Each wrapped in its own try because the hooks'
+        # no-raise contracts are belt-and-suspenders — anything escaping
+        # here would crash atexit.
         try:
             self._fire_job_end_hook()
         except Exception as e:
             print(f"WARNING: on_job_end hook fire failed: {e}",
+                  file=sys.stderr)
+        try:
+            self._fire_file_complete_hook()
+        except Exception as e:
+            print(f"WARNING: on_file_complete hook fire failed: {e}",
                   file=sys.stderr)
 
     def _fire_job_end_hook(self) -> None:
@@ -296,7 +315,43 @@ class HistoryRecorder:
                 return reason, f"{key}={value}"
         return reason, ""
 
-    def _stat_source_bytes(self, hook: JobEndHook) -> int | None:
+    def _fire_file_complete_hook(self) -> None:
+        """Fire on_file_complete from `self.current` + a fresh stat of the
+        output. Success-only by contract — the hook itself filters
+        status != "ok" or missing output, so this method just hands over
+        the data."""
+        hook = self._file_complete_hook
+        if hook is None or not hook.enabled or self.current is None:
+            return
+        rec = self.current
+        status = rec.get("status", "")
+        if status != "ok":
+            return
+        output = rec.get("output") or {}
+        reduction = rec.get("reduction") or {}
+        settings = rec.get("settings") or {}
+        quality = rec.get("quality") or {}
+        output_path = output.get("path")
+        # Refuse to fire when the file isn't actually on disk — the contract
+        # is "ready for next step", not "we think we wrote it".
+        if not output_path or not Path(str(output_path)).exists():
+            return
+        msg = hook.fire(
+            status=status,
+            output=Path(str(output_path)),
+            output_bytes_final=output.get("size_bytes"),
+            source_bytes=self._stat_source_bytes(hook),
+            wall_seconds=rec.get("wall_seconds"),
+            pct_saved=reduction.get("pct_saved"),
+            crf=settings.get("crf"),
+            crf_retry_chain=self._crf_retry_chain or str(
+                settings.get("crf") or ""),
+            vmaf_mean=quality.get("vmaf_mean"),
+        )
+        if msg:
+            print(msg, file=sys.stderr)
+
+    def _stat_source_bytes(self, hook) -> int | None:
         """Return the user's original source size in bytes. Stats the path the
         hook was bound to (the user's `src`, not the patched `encode_src`).
         Returns None on stat failure — the hook then emits an empty
@@ -344,6 +399,11 @@ def finalize_history_state(src: Path, dst: Path, workdir: Path,
 def attach_job_end_hook(hook: JobEndHook | None) -> None:
     """Module-level shim for the recorder.attach_job_end_hook seam."""
     _recorder.attach_job_end_hook(hook)
+
+
+def attach_file_complete_hook(hook: FileCompleteHook | None) -> None:
+    """Module-level shim for the recorder.attach_file_complete_hook seam."""
+    _recorder.attach_file_complete_hook(hook)
 
 
 def set_stop_context(**kwargs) -> None:

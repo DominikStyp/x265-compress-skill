@@ -97,6 +97,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                          "X265_JOB_STOP_DETAIL, X265_CRF, X265_CRF_RETRY_CHAIN, "
                          "X265_OUTPUT_BYTES_PROJECTED, X265_PCT_SAVED, etc. "
                          "Best-effort, never aborts the encode.")
+    ap.add_argument("--on-file-complete", default=None, metavar="CMD",
+                    help="With --resumable, run CMD exactly once when the "
+                         "encoded .mkv is final and on disk (success only — "
+                         "skips for any stop / failure). Carries queue-level "
+                         "X265_QUEUE_* counters when invoked via run_queue.py "
+                         "(degrades to 1/1 defaults in single-file mode). "
+                         "Same shape as --on-chunk-done; best-effort.")
     ap.add_argument("--no-report", action="store_true",
                     help="Don't write a per-file markdown report. Set by "
                          "run_queue.py because it writes an aggregate report.")
@@ -222,6 +229,18 @@ def main() -> int:
                   "(job-end hook fires from the chunked encoder's history "
                   "flush).", file=sys.stderr)
             job_end_command = None
+    file_complete_command = None
+    if args.on_file_complete:
+        try:
+            file_complete_command = parse_hook_spec(args.on_file_complete,
+                                                    key="on_file_complete")
+        except ValueError as e:
+            sys.exit(f"ERROR: --on-file-complete: {e}")
+        if not args.resumable:
+            print("WARNING: --on-file-complete ignored without --resumable "
+                  "(file-complete hook fires from the chunked encoder's "
+                  "history flush).", file=sys.stderr)
+            file_complete_command = None
 
     write_script(
         info, plan, source_path,
@@ -237,6 +256,7 @@ def main() -> int:
         no_pause=args.no_pause,
         on_chunk_done=hook_command,
         on_job_end=job_end_command,
+        on_file_complete=file_complete_command,
     )
 
     print(json.dumps({
@@ -262,6 +282,7 @@ def main() -> int:
         "max_output_bytes": max_output_bytes,
         "on_chunk_done": hook_command,
         "on_job_end": job_end_command,
+        "on_file_complete": file_complete_command,
     }, indent=2, ensure_ascii=False))
     return 0
 

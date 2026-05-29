@@ -77,15 +77,18 @@ def _cmd_set_escape(s: str) -> str:
 
 def _hook_fragments_win(tmp_dir: Path, stem: str,
                        on_chunk_done: list[str] | None,
-                       on_job_end: list[str] | None) -> tuple[str, str]:
+                       on_job_end: list[str] | None,
+                       on_file_complete: list[str] | None
+                       ) -> tuple[str, str]:
     """(setup, flag) for the .bat: a `set` stashing the sidecar path + the
     --hooks-config flag referencing it. ("", "") when no hook is configured.
 
-    Sidecar carries BOTH hooks side-by-side (when configured) so a single
-    --hooks-config flag suffices — `encode_resumable.py` reads both keys."""
+    Sidecar carries all hooks side-by-side (when configured) so a single
+    --hooks-config flag suffices — `encode_resumable.py` reads each key."""
     sidecar = write_hooks_sidecar(tmp_dir, stem,
                                   on_chunk_done=on_chunk_done,
-                                  on_job_end=on_job_end)
+                                  on_job_end=on_job_end,
+                                  on_file_complete=on_file_complete)
     if sidecar is None:
         return "", ""
     # Sidecar path goes into `set "VAR=..."`, so double any `%` (the stem can
@@ -96,11 +99,14 @@ def _hook_fragments_win(tmp_dir: Path, stem: str,
 
 def _hook_fragments_posix(tmp_dir: Path, stem: str,
                          on_chunk_done: list[str] | None,
-                         on_job_end: list[str] | None) -> tuple[str, str]:
+                         on_job_end: list[str] | None,
+                         on_file_complete: list[str] | None
+                         ) -> tuple[str, str]:
     """POSIX equivalent — sidecar path single-quoted via _sh_quote."""
     sidecar = write_hooks_sidecar(tmp_dir, stem,
                                   on_chunk_done=on_chunk_done,
-                                  on_job_end=on_job_end)
+                                  on_job_end=on_job_end,
+                                  on_file_complete=on_file_complete)
     if sidecar is None:
         return "", ""
     return (f"\n_SKILL_HOOKS={_sh_quote(str(sidecar))}",
@@ -268,7 +274,8 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
                 no_report: bool = False,
                 no_pause: bool = False,
                 on_chunk_done: list[str] | None = None,
-                on_job_end: list[str] | None = None) -> None:
+                on_job_end: list[str] | None = None,
+                on_file_complete: list[str] | None = None) -> None:
     """Render the encoder script for the current OS and write it to
     `plan.script_path`. On Windows that's a `.bat`; on POSIX it's a `.sh`.
 
@@ -297,6 +304,7 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
             no_pause=no_pause,
             on_chunk_done=on_chunk_done,
             on_job_end=on_job_end,
+            on_file_complete=on_file_complete,
         )
     else:
         content = _render_posix_script(
@@ -313,6 +321,7 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
             no_pause=no_pause,
             on_chunk_done=on_chunk_done,
             on_job_end=on_job_end,
+            on_file_complete=on_file_complete,
         )
 
     out_path = Path(plan.script_path)
@@ -345,7 +354,7 @@ def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
                           auto_fix_choke, no_pre_flight_scan,
                           auto_patch_source, max_patch_seconds,
                           no_report, no_pause, on_chunk_done=None,
-                          on_job_end=None) -> str:
+                          on_job_end=None, on_file_complete=None) -> str:
     common = _win_substitutions(info, plan, source_path, no_pause=no_pause)
     if resumable:
         workdir = compress_workdir(tmp_dir, source_path)
@@ -370,7 +379,8 @@ def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
         )
         no_report_flag = " ^\n  --no-report" if no_report else ""
         hooks_setup, hooks_flag = _hook_fragments_win(
-            tmp_dir, source_path.stem, on_chunk_done, on_job_end)
+            tmp_dir, source_path.stem, on_chunk_done, on_job_end,
+            on_file_complete)
         return bat_t.RESUMABLE_BAT_TEMPLATE.format(
             resumable_script=_cmd_set_escape(str(skill_dir / "encode_resumable.py")),
             workdir=_cmd_set_escape(str(workdir)),
@@ -398,7 +408,7 @@ def _render_posix_script(info, plan, source_path, skill_dir, tmp_dir,
                         auto_fix_choke, no_pre_flight_scan,
                         auto_patch_source, max_patch_seconds,
                         no_report, no_pause, on_chunk_done=None,
-                        on_job_end=None) -> str:
+                        on_job_end=None, on_file_complete=None) -> str:
     common = _posix_substitutions(info, plan, source_path, no_pause=no_pause)
     # Skill-script paths are bash variable values — quote them too.
     resumable_script = _sh_quote(str(skill_dir / "encode_resumable.py"))
@@ -424,7 +434,8 @@ def _render_posix_script(info, plan, source_path, skill_dir, tmp_dir,
         )
         no_report_flag = " \\\n  --no-report" if no_report else ""
         hooks_setup, hooks_flag = _hook_fragments_posix(
-            tmp_dir, source_path.stem, on_chunk_done, on_job_end)
+            tmp_dir, source_path.stem, on_chunk_done, on_job_end,
+            on_file_complete)
         return sh_t.RESUMABLE_SH_TEMPLATE.format(
             resumable_script=resumable_script,
             workdir=_sh_quote(str(workdir)),

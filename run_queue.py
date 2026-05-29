@@ -31,9 +31,12 @@ import json
 import sys
 from pathlib import Path
 
+import time
+
 from platform_compat import enable_utf8_io
 from queue_modules.job_runner import run_job_with_crf_retry
 from queue_modules.job_schema import derive_output_path, merge_job
+from queue_modules.queue_counters import compute_queue_counters, overlay_env
 from queue_modules.queue_io import reload_queue_with_retry
 
 
@@ -231,6 +234,7 @@ def main() -> int:
     seen_inputs: set[str] = set()
     last_mtime: float | None = None
     job_counter = 0
+    queue_start_monotonic = time.monotonic()
 
     while True:
         # JSON parse errors mid-edit are tolerated only after we've
@@ -277,10 +281,21 @@ def main() -> int:
                 _emit_json_status(args.json_status, skip_row)
             continue
 
-        status, row = run_job_with_crf_retry(
-            compress_py=compress_py, merged=merged,
-            i=job_counter, n=len(seen_inputs),
+        # Overlay X265_QUEUE_* env onto the child encoder process so the
+        # on_file_complete hook (which the encoder spawns) inherits the live
+        # counters. Per-job scope: restored on the way out of the block, so a
+        # subsequent skipped/missing job sees no stale overlay.
+        counter_env = compute_queue_counters(
+            job_reports,
+            total_jobs=len(seen_inputs),
+            queue_wall_seconds=time.monotonic() - queue_start_monotonic,
+            upcoming_index=job_counter,
         )
+        with overlay_env(counter_env):
+            status, row = run_job_with_crf_retry(
+                compress_py=compress_py, merged=merged,
+                i=job_counter, n=len(seen_inputs),
+            )
         job_reports.append(row)
         if args.json_status:
             _emit_json_status(args.json_status, row)

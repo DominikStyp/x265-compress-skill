@@ -560,6 +560,66 @@ curl -fsS -X POST https://example.test/notify -d "$msg"
 
 **Same best-effort discipline as `on_chunk_done`** — 30 s timeout, missing/failing command logged but never aborts the encode. Fires exactly once per process via the same atexit-flush chokepoint that writes the JSONL audit record (so the audit trail is always on disk before the hook can hang).
 
+### File-completed hook (`on_file_complete`)
+
+`on_job_end` fires for *every* terminal status. `on_file_complete` fires **only on success** AND only when the final `.mkv` is on disk — for "the file is done, ready for the next step" notifications (archive, sync, move-to-done). Fire order inside flush(): JSONL audit → `on_job_end` → `on_file_complete`. A slow celebration push can't delay the job-end alert; nothing can delay the audit row.
+
+The big addition: **queue-level counter env vars**, set by `run_queue.py` on every per-job spawn so the notification carries "3 of 8 done · 5 left · 0 failed" without each script having to read `job_reports` itself.
+
+```json
+{
+  "defaults": {
+    "on_chunk_done":    ["python3", "/home/me/notify_chunk.py"],
+    "on_job_end":       ["python3", "/home/me/notify_job.py"],
+    "on_file_complete": ["python3", "/home/me/notify_file_done.py"]
+  },
+  "jobs": [{"input": "clip1.mp4"}, {"input": "clip2.mp4"}]
+}
+```
+
+**Per-file env vars:**
+
+| Variable | Example | Meaning |
+|---|---|---|
+| `X265_HOOK_EVENT` | `file-complete` | the event |
+| `X265_SOURCE` | `/videos/a.mp4` | source file |
+| `X265_OUTPUT` | `/videos/a.mkv` | finished `.mkv` (guaranteed on disk) |
+| `X265_SOURCE_BYTES` / `X265_OUTPUT_BYTES` | `1981154704` / `1286799161` | sizes |
+| `X265_PCT_SAVED` | `35.05` | this file's savings |
+| `X265_WALL_SECONDS` | `11095.55` | this file's encode wall time |
+| `X265_CRF` / `X265_CRF_RETRY_CHAIN` | `23` / `21,22,23` | final + chain |
+| `X265_VMAF_MEAN` | `97.45` | from quality sidecar, empty when skipped |
+
+**Queue-level counters (per-run scope, inclusive of the just-finished job):**
+
+| Variable | Example | Meaning |
+|---|---|---|
+| `X265_QUEUE_INDEX` | `3` | 1-based queue position |
+| `X265_QUEUE_TOTAL` | `8` | total queue size |
+| `X265_QUEUE_ITEMS_FINISHED` | `3` | ok jobs so far (incl. this one) |
+| `X265_QUEUE_ITEMS_REMAINING` | `5` | jobs not yet attempted |
+| `X265_QUEUE_ITEMS_FAILED` | `0` | real failures so far |
+| `X265_QUEUE_ITEMS_STOPPED` | `0` | non-failure stops (threshold, choked, awaiting-fix, user, pre-flight) |
+| `X265_QUEUE_ITEMS_SKIPPED` | `0` | skipped (output existed, input missing) |
+| `X265_QUEUE_BYTES_IN_SO_FAR` | `4500000000` | aggregate source bytes |
+| `X265_QUEUE_BYTES_OUT_SO_FAR` | `3200000000` | aggregate output bytes |
+| `X265_QUEUE_PCT_SAVED_SO_FAR` | `28.89` | aggregate saving (this run) |
+| `X265_QUEUE_WALL_SECONDS` | `12345.6` | wall seconds since `run_queue.py` started |
+
+Single-file `compress.py` runs (no queue) populate the same env vars with degraded `1/1/0/0` defaults — so the same hook script works in both modes without a `if "X265_QUEUE_INDEX" in os.environ` branch.
+
+Minimal POSIX notifier:
+
+```bash
+#!/usr/bin/env bash
+src=$(basename "$X265_SOURCE")
+out_mb=$(( ${X265_OUTPUT_BYTES} / 1024 / 1024 ))
+title="✅ FILE DONE · ${X265_QUEUE_ITEMS_FINISHED}/${X265_QUEUE_TOTAL} · CRF ${X265_CRF_RETRY_CHAIN} · saved ${X265_PCT_SAVED}% · ${out_mb} MB"
+curl -fsS -X POST https://example.test/notify -d "title=${title}&body=${src}"
+```
+
+Same best-effort discipline. The three hooks (`on_chunk_done`, `on_job_end`, `on_file_complete`) are independent — configure any subset.
+
 ### Launcher (`run_queue.bat`)
 
 **Whenever you write a `queue.json`, also write a `run_queue.bat` next to it** so the user can start the encode by double-clicking instead of typing the python invocation. Use this exact template, saved UTF-8 without BOM and with **CRLF (Windows) line endings** — cmd.exe mis-parses LF-only .bat files, dropping leading characters per line (`chcp`→`cp`, `title`→`tle`):

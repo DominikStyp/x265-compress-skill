@@ -35,6 +35,7 @@ VALID_KEYS: set[str] = {
     "max_patch_seconds",
     "on_chunk_done",
     "on_job_end",
+    "on_file_complete",
     # Queue-only keys (consumed by the queue runner, NOT forwarded to
     # compress.py argv): auto-escalate CRF when the size guard stops a job.
     "retry_with_bigger_crf",
@@ -108,6 +109,10 @@ def build_compress_argv(job: dict) -> list[str]:
         argv += ["--on-job-end",
                  json.dumps(cmd_job_end if isinstance(cmd_job_end, list)
                             else [cmd_job_end])]
+    cmd_fc = job.get("on_file_complete")
+    if cmd_fc:
+        argv += ["--on-file-complete",
+                 json.dumps(cmd_fc if isinstance(cmd_fc, list) else [cmd_fc])]
     # In queue mode the default is resumable=true (kills survive, partial
     # work is preserved). Set "resumable": false in JSON to opt out.
     if job.get("resumable", True):

@@ -32,7 +32,8 @@ SIDECAR_KEY = "on_chunk_done"
 # Hook keys this version knows about. Unknown keys in a sidecar are tolerated
 # (degrade: ignored) — that's how we'll add `on_file_complete` later without
 # breaking a sidecar mid-encode if the user upgrades while resuming.
-VALID_HOOK_KEYS: tuple[str, ...] = ("on_chunk_done", "on_job_end")
+VALID_HOOK_KEYS: tuple[str, ...] = ("on_chunk_done", "on_job_end",
+                                    "on_file_complete")
 
 
 def parse_hook_spec(value: str, *, key: str = SIDECAR_KEY) -> list[str]:
@@ -88,7 +89,8 @@ def write_hook_sidecar(tmp_dir: Path, stem: str, command: list[str]) -> Path:
 
 def write_hooks_sidecar(tmp_dir: Path, stem: str, *,
                         on_chunk_done: Optional[list[str]] = None,
-                        on_job_end: Optional[list[str]] = None
+                        on_job_end: Optional[list[str]] = None,
+                        on_file_complete: Optional[list[str]] = None
                         ) -> Optional[Path]:
     """Atomic multi-hook writer. Pass any subset of the known hooks as kwargs;
     the resulting sidecar carries exactly those keys, in canonical order.
@@ -102,6 +104,8 @@ def write_hooks_sidecar(tmp_dir: Path, stem: str, *,
         payload["on_chunk_done"] = list(on_chunk_done)
     if on_job_end:
         payload["on_job_end"] = list(on_job_end)
+    if on_file_complete:
+        payload["on_file_complete"] = list(on_file_complete)
     if not payload:
         return None
     tmp_dir.mkdir(parents=True, exist_ok=True)
