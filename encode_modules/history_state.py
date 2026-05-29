@@ -30,6 +30,7 @@ import threading
 from pathlib import Path
 
 import history as _hist
+from .job_end_hook import JobEndHook
 from .probes import probe_full
 
 
@@ -54,6 +55,19 @@ class HistoryRecorder:
         # non-atomic. init/mark_status/finalize run single-threaded (before
         # workers start / after they join), so they don't need it.
         self._lock = threading.Lock()
+        # on_job_end hook (optional). Bound by encode_resumable.main() after
+        # reading the sidecar; None means "no job-end hook configured". Fires
+        # exactly once, right after the JSONL record lands in flush().
+        self._job_end_hook: JobEndHook | None = None
+        # Static job-end context the encoder hands in alongside the hook.
+        # Most fields are derivable from `self.current` after finalize, but
+        # threshold-aborts populate them earlier (so they survive the atexit
+        # flush even when finalize() never ran).
+        self._stop_reason: str = ""
+        self._stop_detail: str = ""
+        self._crf_retry_chain: str = ""
+        self._output_bytes_projected: int | None = None
+        self._output_bytes_threshold: int | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -160,10 +174,36 @@ class HistoryRecorder:
             print(f"WARNING: history finalize failed: {e}", file=sys.stderr)
         self.flush()
 
+    def attach_job_end_hook(self, hook: JobEndHook | None) -> None:
+        """Wire the on_job_end hook so flush() can fire it exactly once with
+        the final status. None disables the hook (the default)."""
+        self._job_end_hook = hook
+
+    def set_stop_context(self, *,
+                         reason: str = "",
+                         detail: str = "",
+                         output_bytes_projected: int | None = None,
+                         output_bytes_threshold: int | None = None) -> None:
+        """Stash threshold/stop context BEFORE the exit path runs the flush.
+
+        Called from the threshold-abort site so the job-end hook can report
+        the projection + threshold even when sys.exit fires straight into
+        the atexit flush. Empty / None values clear nothing — they're the
+        caller's default, applied only when explicitly passed in."""
+        if reason:
+            self._stop_reason = reason
+        if detail:
+            self._stop_detail = detail
+        if output_bytes_projected is not None:
+            self._output_bytes_projected = output_bytes_projected
+        if output_bytes_threshold is not None:
+            self._output_bytes_threshold = output_bytes_threshold
+
     def flush(self) -> None:
-        """Append the in-progress record to encoding_history.jsonl.
-        Idempotent — second calls are no-ops. Never raises (encoding
-        mustn't fail because the side-channel log misbehaved)."""
+        """Append the in-progress record to encoding_history.jsonl, then fire
+        the on_job_end hook if one is attached. Idempotent — second calls are
+        no-ops. Never raises (encoding mustn't fail because the side-channel
+        log misbehaved)."""
         if self.written or self.current is None:
             return
         try:
@@ -172,6 +212,102 @@ class HistoryRecorder:
             self.written = True
         except Exception as e:
             print(f"WARNING: history flush failed: {e}", file=sys.stderr)
+        # Fire on_job_end LAST so the audit trail is always on disk first.
+        # Wrapped in its own try because the hook's no-raise contract is
+        # belt-and-suspenders — anything escaping here would crash atexit.
+        try:
+            self._fire_job_end_hook()
+        except Exception as e:
+            print(f"WARNING: on_job_end hook fire failed: {e}",
+                  file=sys.stderr)
+
+    def _fire_job_end_hook(self) -> None:
+        """Build the per-job context from `self.current` + stored stop fields
+        and invoke the attached JobEndHook. No-op when no hook is attached.
+
+        Derives stop_reason/stop_detail from the JSONL record itself when the
+        threshold-abort path didn't pre-populate them (the common case for
+        chunk-failed, verify-failed, awaiting-chunk-fix, stopped-by-user) —
+        so every non-ok terminal status carries enough context for a
+        notification script to dispatch on."""
+        hook = self._job_end_hook
+        if hook is None or not hook.enabled or self.current is None:
+            return
+        rec = self.current
+        status = rec.get("status", "")
+        # Same field locations as the JSONL schema, kept as the single source
+        # of truth — the hook just surfaces them via env vars.
+        output = rec.get("output") or {}
+        reduction = rec.get("reduction") or {}
+        settings = rec.get("settings") or {}
+        # X265_OUTPUT must point at a real final file: empty on every status
+        # except "ok" so a notification script can use "X265_OUTPUT != ''" as
+        # "the encoded mkv is on disk". init() seeds output.path early, so we
+        # gate on status here, not on path presence.
+        output_path = output.get("path") if status == "ok" else None
+        out_bytes = output.get("size_bytes") if status == "ok" else None
+        stop_reason, stop_detail = self._derive_stop_fields(rec, status)
+        msg = hook.fire(
+            status=status,
+            stop_reason=stop_reason,
+            stop_detail=stop_detail,
+            crf=settings.get("crf"),
+            crf_retry_chain=self._crf_retry_chain or str(
+                settings.get("crf") or ""),
+            output=Path(str(output_path)) if output_path else None,
+            output_bytes_final=out_bytes,
+            # The user's original source is what the hook reports — NOT the
+            # auto-patched encode_src that the JSONL `input.size_bytes` holds
+            # (that field feeds the size-projection guard which needs the
+            # patched-size denominator). Same invariant as X265_SOURCE.
+            source_bytes=self._stat_source_bytes(hook),
+            output_bytes_projected=self._output_bytes_projected,
+            output_bytes_threshold=self._output_bytes_threshold,
+            wall_seconds=rec.get("wall_seconds"),
+            pct_saved=reduction.get("pct_saved"),
+        )
+        if msg:
+            print(msg, file=sys.stderr)
+
+    def _derive_stop_fields(self, rec: dict, status: str) -> tuple[str, str]:
+        """Build (stop_reason, stop_detail) from the record when the
+        threshold-abort path didn't pre-populate them. `stop_reason` defaults
+        to the JSONL status (so chunk-failed → reason='chunk-failed');
+        `stop_detail` digs through the structured failure fields the encoder
+        stashed under mark_status(..., **extras). Empty on the ok path so a
+        notifier can detect "no problem" via stop_reason == ""."""
+        if status == "ok":
+            return "", ""
+        reason = self._stop_reason or status
+        if self._stop_detail:
+            return reason, self._stop_detail
+        # Best-effort detail digger — surface whichever structured field the
+        # encoder actually populated for this status class.
+        for key in ("abort_reason",):
+            value = rec.get(key)
+            if isinstance(value, str) and value:
+                return reason, value
+        for key in ("failed_chunks", "verify_problems", "skipped_chunks",
+                    "remaining_chunks"):
+            value = rec.get(key)
+            if isinstance(value, list) and value:
+                return reason, ", ".join(str(v) for v in value)
+            if isinstance(value, int):
+                return reason, f"{key}={value}"
+        return reason, ""
+
+    def _stat_source_bytes(self, hook: JobEndHook) -> int | None:
+        """Return the user's original source size in bytes. Stats the path the
+        hook was bound to (the user's `src`, not the patched `encode_src`).
+        Returns None on stat failure — the hook then emits an empty
+        X265_SOURCE_BYTES rather than a stale or wrong value."""
+        try:
+            src = getattr(hook, "_source", None)
+            if src is None:
+                return None
+            return Path(str(src)).stat().st_size
+        except OSError:
+            return None
 
 
 # Singleton instance — one HistoryRecorder per process lifetime.
@@ -180,9 +316,9 @@ _recorder = HistoryRecorder()
 atexit.register(_recorder.flush)
 
 
-# Module-level API: forward to the singleton so call sites stay terse.
-# (Bound methods are captured at module load; if a test replaces `_recorder`
-# it should also re-bind these names — see `_reset_for_tests` below.)
+# Module-level API: forward to the singleton so call sites stay terse. Each
+# shim dereferences `_recorder` at call time, so `_reset_for_tests()` swapping
+# the global is sufficient — the shims don't need rebinding.
 def init_history_state(src: Path, dst: Path, args: argparse.Namespace,
                       source_bytes: int) -> None:
     _recorder.init(src, dst, args, source_bytes)
@@ -203,6 +339,17 @@ def finalize_history_state(src: Path, dst: Path, workdir: Path,
                           encode_order: list[Path] | None = None) -> None:
     _recorder.finalize(src, dst, workdir, chunks, wall_seconds,
                        quality_scores, encode_order)
+
+
+def attach_job_end_hook(hook: JobEndHook | None) -> None:
+    """Module-level shim for the recorder.attach_job_end_hook seam."""
+    _recorder.attach_job_end_hook(hook)
+
+
+def set_stop_context(**kwargs) -> None:
+    """Module-level shim for the recorder.set_stop_context seam (used by
+    threshold-abort sites in encode_parallel)."""
+    _recorder.set_stop_context(**kwargs)
 
 
 def _reset_for_tests() -> None:

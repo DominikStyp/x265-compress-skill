@@ -30,12 +30,14 @@ from encode_modules.chunk_hook import ChunkHook
 from encode_modules.chunking import cleanup, reorder_middle_first, split_source
 from encode_modules.cli_args import parse_args
 from encode_modules.finish_signal import FINISH_FILENAME
-from encode_modules.hook_config import load_hook_sidecar
+from encode_modules.hook_config import load_hooks_sidecar
 from encode_modules.history_state import (
+    attach_job_end_hook,
     finalize_history_state,
     init_history_state,
     mark_status,
 )
+from encode_modules.job_end_hook import JobEndHook
 from encode_modules.preflight_decision import handle_preflight
 from encode_modules.probes import probe_duration
 from platform_compat import enable_ansi, enable_utf8_io
@@ -124,6 +126,26 @@ def main() -> int:
 
     run_start = time.monotonic()
 
+    # Read & attach the on_job_end hook EARLY — before pre-flight runs — so
+    # a pre-flight failure also fires the notification. The chunk hook can't
+    # be built yet (it needs the chunks list + total duration), so we defer
+    # that until after chunking; job_end only needs src/workdir.
+    job_end_command = None
+    chunk_hook_command = None
+    if args.hooks_config:
+        hooks = load_hooks_sidecar(Path(args.hooks_config))
+        if hooks is None:
+            print(f"      WARNING: hook config unreadable "
+                  f"({args.hooks_config}); continuing without hooks.",
+                  file=sys.stderr)
+        else:
+            chunk_hook_command = hooks.get("on_chunk_done")
+            job_end_command = hooks.get("on_job_end")
+    job_end_hook = JobEndHook(job_end_command, source=src, workdir=workdir)
+    attach_job_end_hook(job_end_hook)
+    if job_end_hook.enabled:
+        print(f"      on_job_end hook: {job_end_command}")
+
     # Pre-flight + optional auto-patch. Bail before any chunking work if
     # the source is unsafe to encode. `encode_src` is what the pipeline
     # actually consumes — on auto-patch it's a rebuilt copy that lives INSIDE
@@ -140,16 +162,10 @@ def main() -> int:
     print(f"      To stop after the current chunk (resumable): press 'f' in "
           f"the live display, or create {workdir / FINISH_FILENAME}")
 
-    # Build the on_chunk_done hook from the sidecar compress.py wrote (if any).
-    # An unreadable sidecar degrades to "no hook" — an auxiliary notification
-    # must never abort the encode.
-    hook_command = None
-    if args.hooks_config:
-        hook_command = load_hook_sidecar(Path(args.hooks_config))
-        if hook_command is None:
-            print(f"      WARNING: on_chunk_done hook config unreadable "
-                  f"({args.hooks_config}); continuing without it.",
-                  file=sys.stderr)
+    # Hook commands were already loaded above so the job-end hook could
+    # attach before pre-flight. Re-bind the chunk hook value here under its
+    # local name so the chunk-hook construction below stays unchanged.
+    hook_command = chunk_hook_command
     total_dur = (args.total_duration_seconds
                  if args.total_duration_seconds is not None
                  else sum(probe_duration(c) for c in chunks))

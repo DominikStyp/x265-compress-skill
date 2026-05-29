@@ -146,6 +146,10 @@ class ParallelDisplay:
         self.max_output_bytes = max_output_bytes
         self.abort_event = threading.Event()
         self.abort_reason = ""
+        # Last threshold-projection byte count (raw int). Populated by
+        # size_projection.check_threshold when the guard fires; surfaces to
+        # the on_job_end hook via the recorder's stop context.
+        self.last_projection_bytes: int | None = None
         self.active_procs: dict[int, subprocess.Popen] = {}
 
         # Interactive pause/resume state. paused_slots tracks which slot indices

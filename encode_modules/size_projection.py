@@ -110,6 +110,10 @@ def check_threshold(display) -> None:
         f"exceeds threshold {thr_mb:.1f} MB ({thr_pct:.1f}%). "
         f"Stopped at {progress*100:.1f}% overall progress."
     )
+    # Stash the raw byte count too — the on_job_end hook reads this off the
+    # display via the recorder's stop context so a notification can carry
+    # the precise projection alongside the human-readable reason.
+    display.last_projection_bytes = int(estimated_total)
     display.abort_event.set()
     with display.lock:
         procs = list(display.active_procs.values())

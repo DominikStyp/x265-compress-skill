@@ -3,6 +3,40 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.9.0] — 2026-05-29
+
+### Added
+- **`on_job_end` hook — fires once per job at the terminal-status chokepoint.**
+  Companion to `on_chunk_done`, with rich detail aimed at notifications that
+  need to distinguish "size guard tripped at CRF 21, projected 87% of source"
+  from "actual crash". Configured the same way (queue.json key,
+  `--on-job-end` CLI flag, sidecar JSON), requires `--resumable`, same
+  best-effort no-raise discipline (30 s timeout; failures logged, never
+  abort the encode). Fires from `HistoryRecorder.flush()` AFTER the JSONL
+  audit record lands, so the audit trail is always on disk first.
+
+  New env vars (always present — empty when not applicable):
+  - `X265_JOB_STATUS` — the terminal status (`ok`, `stopped-threshold`,
+    `stopped-threshold-crf-exhausted`, `chunk-failed`, `chunk-choked`,
+    `awaiting-chunk-fix`, `verify-failed`, `pre-flight-failed`,
+    `stopped-by-user`, generic failure)
+  - `X265_JOB_STOP_REASON` — machine-readable reason; empty on `ok`
+  - `X265_JOB_STOP_DETAIL` — human-readable banner text (e.g. the exact
+    threshold projection line) or derived from the status's structured
+    failure fields (`failed_chunks`, `verify_problems`, …)
+  - `X265_CRF`, `X265_CRF_RETRY_CHAIN`
+  - `X265_OUTPUT`, `X265_OUTPUT_BYTES_FINAL` (empty when status != `ok`)
+  - `X265_OUTPUT_BYTES_PROJECTED`, `X265_OUTPUT_BYTES_THRESHOLD` (set on
+    threshold abort)
+  - `X265_SOURCE_BYTES` — the **user's original** source size, never the
+    auto-patched copy (the project invariant: every user-facing surface
+    reports the original `src`)
+  - `X265_WALL_SECONDS`, `X265_PCT_SAVED`
+
+  Hook attaches to the recorder BEFORE pre-flight, so pre-flight failures
+  also notify. Existing v1.8.x `<stem>.hooks.json` sidecars (single-key)
+  still load on resume.
+
 ## [1.8.2] — 2026-05-29
 
 ### Fixed

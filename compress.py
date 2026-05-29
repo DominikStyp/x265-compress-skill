@@ -88,6 +88,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                          "(X265_CHUNK_INDEX, X265_CHUNK_TOTAL, X265_CHUNK_STATUS, "
                          "X265_CHUNK_OUTPUT, X265_SOURCE, ...). Best-effort: a "
                          "slow/failing hook never aborts the encode.")
+    ap.add_argument("--on-job-end", default=None, metavar="CMD",
+                    help="With --resumable, run CMD exactly once when the job "
+                         "ends — for ANY terminal status (ok, stopped-threshold, "
+                         "chunk-choked, pre-flight-failed, verify-failed, "
+                         "stopped-by-user, ...). Same shape as --on-chunk-done. "
+                         "Context via X265_JOB_STATUS, X265_JOB_STOP_REASON, "
+                         "X265_JOB_STOP_DETAIL, X265_CRF, X265_CRF_RETRY_CHAIN, "
+                         "X265_OUTPUT_BYTES_PROJECTED, X265_PCT_SAVED, etc. "
+                         "Best-effort, never aborts the encode.")
     ap.add_argument("--no-report", action="store_true",
                     help="Don't write a per-file markdown report. Set by "
                          "run_queue.py because it writes an aggregate report.")
@@ -186,19 +195,33 @@ def main() -> int:
         if archival_warning:
             print(archival_warning, file=sys.stderr)
 
-    # Parse the chunk hook up front so a malformed command fails loud HERE,
-    # before any script is written or any encode starts. It only applies to
-    # the chunked encoder, so warn + drop it for a non-resumable run.
+    # Parse the hooks up front so a malformed command fails loud HERE, before
+    # any script is written or any encode starts. Both hooks require the
+    # chunked encoder (the job-end hook attaches to the recorder which runs
+    # inside encode_resumable.py), so warn + drop them for a non-resumable run.
     hook_command = None
     if args.on_chunk_done:
         try:
-            hook_command = parse_hook_spec(args.on_chunk_done)
+            hook_command = parse_hook_spec(args.on_chunk_done,
+                                           key="on_chunk_done")
         except ValueError as e:
             sys.exit(f"ERROR: --on-chunk-done: {e}")
         if not args.resumable:
             print("WARNING: --on-chunk-done ignored without --resumable "
                   "(chunk hooks require the chunked encoder).", file=sys.stderr)
             hook_command = None
+    job_end_command = None
+    if args.on_job_end:
+        try:
+            job_end_command = parse_hook_spec(args.on_job_end,
+                                              key="on_job_end")
+        except ValueError as e:
+            sys.exit(f"ERROR: --on-job-end: {e}")
+        if not args.resumable:
+            print("WARNING: --on-job-end ignored without --resumable "
+                  "(job-end hook fires from the chunked encoder's history "
+                  "flush).", file=sys.stderr)
+            job_end_command = None
 
     write_script(
         info, plan, source_path,
@@ -213,6 +236,7 @@ def main() -> int:
         no_report=args.no_report,
         no_pause=args.no_pause,
         on_chunk_done=hook_command,
+        on_job_end=job_end_command,
     )
 
     print(json.dumps({
@@ -237,6 +261,7 @@ def main() -> int:
         "max_size_percent": args.max_size_percent,
         "max_output_bytes": max_output_bytes,
         "on_chunk_done": hook_command,
+        "on_job_end": job_end_command,
     }, indent=2, ensure_ascii=False))
     return 0
 

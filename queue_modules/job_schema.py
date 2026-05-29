@@ -34,6 +34,7 @@ VALID_KEYS: set[str] = {
     "auto_patch_source",
     "max_patch_seconds",
     "on_chunk_done",
+    "on_job_end",
     # Queue-only keys (consumed by the queue runner, NOT forwarded to
     # compress.py argv): auto-escalate CRF when the size guard stops a job.
     "retry_with_bigger_crf",
@@ -101,6 +102,12 @@ def build_compress_argv(job: dict) -> list[str]:
         # disable an inherited `defaults` hook for one job — emit no flag.
         argv += ["--on-chunk-done",
                  json.dumps(cmd if isinstance(cmd, list) else [cmd])]
+    cmd_job_end = job.get("on_job_end")
+    if cmd_job_end:
+        # Same shape and disable-via-falsy semantics as on_chunk_done.
+        argv += ["--on-job-end",
+                 json.dumps(cmd_job_end if isinstance(cmd_job_end, list)
+                            else [cmd_job_end])]
     # In queue mode the default is resumable=true (kills survive, partial
     # work is preserved). Set "resumable": false in JSON to opt out.
     if job.get("resumable", True):

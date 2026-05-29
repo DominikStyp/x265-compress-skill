@@ -21,7 +21,7 @@ from .chunk_recovery import try_auto_fix_chunk
 from .chunk_worker import _encode_one_chunk_with_display
 from .chunking import reorder_middle_first, x265_params_with_pools
 from .display import ParallelDisplay
-from .history_state import mark_status
+from .history_state import mark_status, set_stop_context
 from .keyboard_input import keyboard_listener
 from .messages import (
     print_choke_guard_announcement,
@@ -307,8 +307,18 @@ def encode_chunks_parallel(chunks: list[Path], workdir: Path, *,
 
     if display.abort_event.is_set():
         # Mark the in-progress history record as threshold-aborted before
-        # the atexit hook flushes it.
+        # the atexit hook flushes it. Also publish the human-readable
+        # reason + projection/threshold byte counts to the on_job_end hook
+        # via the recorder's stop context, since the atexit flush path can't
+        # reach the display's state after sys.exit hands off.
         mark_status("stopped-threshold", abort_reason=display.abort_reason)
+        set_stop_context(
+            reason="stopped-threshold",
+            detail=display.abort_reason,
+            output_bytes_projected=getattr(display, "last_projection_bytes",
+                                           None),
+            output_bytes_threshold=display.max_output_bytes,
+        )
         print_threshold_abort_block(workdir, display.abort_reason)
         sys.exit(3)
 

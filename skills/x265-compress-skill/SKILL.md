@@ -509,6 +509,57 @@ curl -fsS -X POST https://example.test/notify \
 
 **Best-effort — it never derails the encode.** The hook runs with a 30 s timeout; a missing command, a non-zero exit, or a timeout is logged and ignored. Already-encoded chunks are skipped on a resumed run (so they don't re-fire); a retried failed chunk fires again.
 
+### Job-ended hook (`on_job_end`)
+
+`on_chunk_done` fires *per chunk*. `on_job_end` fires **once per job**, after the encoder has decided the job's terminal status — `ok`, `stopped-threshold`, `stopped-threshold-crf-exhausted`, `chunk-choked`, `awaiting-chunk-fix`, `pre-flight-failed`, `verify-failed`, `stopped-by-user`, or a generic failure. Same shape and back-end as `on_chunk_done` (argv list, sidecar JSON, requires `--resumable`); the two hooks are independent, both can be set, neither implies the other. Use it for "the run is done — here's the outcome" notifications, especially the **threshold-stop** case where `on_chunk_done` wouldn't know.
+
+```json
+{
+  "defaults": {
+    "on_chunk_done": ["python3", "/home/me/notify_chunk.py"],
+    "on_job_end":    ["python3", "/home/me/notify_job.py"]
+  },
+  "jobs": [{"input": "clip1.mp4"}]
+}
+```
+
+**Env vars passed (all always present, empty string when not applicable):**
+
+| Variable | Example | Meaning |
+|---|---|---|
+| `X265_HOOK_EVENT` | `job-end` | the event |
+| `X265_JOB_STATUS` | `ok` / `stopped-threshold` / `chunk-choked` / … | terminal status (same values as `encoding_history.jsonl`) |
+| `X265_JOB_STOP_REASON` | `stopped-threshold` | machine-readable reason; empty on `ok` |
+| `X265_JOB_STOP_DETAIL` | `"Estimated output 622.4 MB (85.2% of source) exceeds threshold 621.0 MB (85.0%). Stopped at 16.5% overall progress."` | human-readable line (same text shown on screen) |
+| `X265_SOURCE` | `/videos/a.mp4` | source file |
+| `X265_WORKDIR` | `…/.tmp/.compress_a` | workdir (preserved on stop-paths) |
+| `X265_CRF` | `21` | the CRF the job was using (final, after retries) |
+| `X265_CRF_RETRY_CHAIN` | `21,22` | comma-separated chain when CRF escalated; single value otherwise |
+| `X265_OUTPUT` | `/videos/a.mkv` | final output path (empty on stop / fail) |
+| `X265_OUTPUT_BYTES_FINAL` | `1286799161` | final size on `ok`; empty otherwise |
+| `X265_SOURCE_BYTES` | `1981154704` | source size |
+| `X265_OUTPUT_BYTES_PROJECTED` | `622400000` | size guard's projection that tripped the stop; empty otherwise |
+| `X265_OUTPUT_BYTES_THRESHOLD` | `621000000` | configured max bytes; empty when no guard |
+| `X265_WALL_SECONDS` | `11095.55` | total wall-clock seconds the job ran |
+| `X265_PCT_SAVED` | `35.05` | `(source − output) / source × 100`; empty on stop/fail |
+
+A minimal POSIX notifier:
+
+```bash
+#!/usr/bin/env bash
+case "$X265_JOB_STATUS" in
+  ok)
+    msg="✅ $(basename "$X265_SOURCE") · CRF $X265_CRF_RETRY_CHAIN · saved ${X265_PCT_SAVED}%" ;;
+  stopped-threshold|stopped-threshold-crf-exhausted)
+    msg="⚠️ $(basename "$X265_SOURCE") · CRF $X265_CRF_RETRY_CHAIN · $X265_JOB_STOP_DETAIL" ;;
+  *)
+    msg="⛔ $(basename "$X265_SOURCE") · $X265_JOB_STATUS · CRF $X265_CRF" ;;
+esac
+curl -fsS -X POST https://example.test/notify -d "$msg"
+```
+
+**Same best-effort discipline as `on_chunk_done`** — 30 s timeout, missing/failing command logged but never aborts the encode. Fires exactly once per process via the same atexit-flush chokepoint that writes the JSONL audit record (so the audit trail is always on disk before the hook can hang).
+
 ### Launcher (`run_queue.bat`)
 
 **Whenever you write a `queue.json`, also write a `run_queue.bat` next to it** so the user can start the encode by double-clicking instead of typing the python invocation. Use this exact template, saved UTF-8 without BOM and with **CRLF (Windows) line endings** — cmd.exe mis-parses LF-only .bat files, dropping leading characters per line (`chcp`→`cp`, `title`→`tle`):
