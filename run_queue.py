@@ -43,6 +43,13 @@ from queue_modules.queue_state import (
     delete_queue_state,
     load_queue_state,
 )
+from queue_modules.status import (
+    classify as _status_classify,
+    history_by_input as _status_history_by_input,
+    render_json as _status_render_json,
+    render_table as _status_render_table,
+)
+import history as _history_module
 
 
 def _parse_args() -> argparse.Namespace:
@@ -63,6 +70,15 @@ def _parse_args() -> argparse.Namespace:
                          "(<queue_stem>.state.json) before starting. Use to "
                          "re-attempt jobs that were marked done in a "
                          "previous run.")
+    ap.add_argument("--status", action="store_true",
+                    help="Read-only inspector: print a single consolidated "
+                         "table classifying every job in the queue as "
+                         "DONE / PROCESSING / QUEUED with per-file sizes / "
+                         "CRF / wall / savings. No encoding, no side "
+                         "effects — combine with --status-json for "
+                         "machine-readable output.")
+    ap.add_argument("--status-json", action="store_true",
+                    help="With --status, emit JSON instead of the table.")
     return ap.parse_args()
 
 
@@ -180,6 +196,39 @@ _ATTENTION_STATUSES = {
     "awaiting-chunk-fix", "skipped-not-found",
     "pre-flight-failed", "chunk-choked", "stopped-by-user",
 }
+
+
+def _run_status_inspector(queue_path: Path, *, as_json: bool) -> int:
+    """`--status` entry point. Reads queue.json + encoding_history.jsonl +
+    workdir state + on-disk outputs + state sidecar, classifies every job,
+    prints the result, exits 0. Strictly read-only — touches nothing on
+    disk except for stat()-style queries."""
+    _, defaults, jobs_raw = reload_queue_with_retry(queue_path)
+    if not jobs_raw:
+        print("(queue is empty)")
+        return 0
+    from queue_modules.job_schema import expand_jobs
+    jobs = expand_jobs(jobs_raw, queue_path.parent)
+    history = _status_history_by_input(_history_module.default_history_path())
+    state = load_queue_state(queue_path)
+    rows = []
+    for raw in jobs:
+        merged = merge_job(defaults, raw)
+        row = _status_classify(merged, queue_dir=queue_path.parent,
+                               history=history, state=state)
+        # Number the rows in the order queue.json lists them.
+        rows.append(row)
+    # Set the index field for display — dataclass is frozen-by-default? no,
+    # it isn't, so we mutate in place.
+    for i, r in enumerate(rows, 1):
+        r.index = i
+    if as_json:
+        print(_status_render_json(rows))
+    else:
+        print(f"Queue: {queue_path}")
+        print()
+        print(_status_render_table(rows, totals=True))
+    return 0
 
 
 def _aggregate_exit_code(job_reports: list[dict]) -> int:
@@ -312,6 +361,10 @@ def main() -> int:
     compress_py = skill_dir / "compress.py"
     if not compress_py.is_file():
         sys.exit(f"ERROR: compress.py missing at {compress_py}")
+
+    # --status: read-only inspector. Early exit, no encoding.
+    if args.status:
+        return _run_status_inspector(queue_path, as_json=args.status_json)
 
     if args.reset_state:
         delete_queue_state(queue_path)

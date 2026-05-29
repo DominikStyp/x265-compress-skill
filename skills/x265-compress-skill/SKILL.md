@@ -658,6 +658,33 @@ When `done_dir` moves a source away from the path in `queue.json`, the next run 
 - Foreign inputs (state records for jobs no longer in `queue.json`) are preserved — the user may re-add the row later.
 - Corrupt or unknown-schema-version sidecars degrade to empty state (no crash mid-run).
 
+### Read-only queue status (`run_queue.py --status`)
+
+`run_queue.py <queue.json> --status` prints a single consolidated table of every job in the queue, classified as **DONE / PROCESSING / QUEUED / MISSING INPUT**, with per-file sizes / CRF / wall time / savings. Strictly read-only — no encoding, no side effects, just a `stat()`+history+state reconciliation. Useful between sessions ("what's pending right now?", "did the last job actually finish?", "how much have I saved so far?").
+
+```
+Queue: /Users/.../queue.json
+
+| # | File                       | Status         | CRF       | Source   | Output   | Saved  | Wall    | Notes
+|---|----------------------------|----------------|-----------|----------|----------|--------|---------|----------------
+| 1 | Sata Jones (2160p)         | DONE           | 23        | 1.85 GB  | 1.20 GB  | 35.1%  | 3h 05m  | output present
+| 2 | Vinna Reed (1440p)         | PROCESSING     | 21        | 2.67 GB  | —        | —      | —       | 4/10 chunks done
+| 3 | Chanel Lux (1080p)         | QUEUED         | 19 (start)| 2.15 GB  | —        | —      | —       |
+
+Totals (finished): 1.85 GB in → 1.20 GB out → 651 MB / 35.1% saved (1 jobs)
+```
+
+Classification (first match wins):
+
+| Status        | Trigger |
+|---------------|---------|
+| MISSING INPUT | Input not at queue-listed path AND not in state sidecar |
+| DONE          | Output `.mkv` exists on disk OR the queue state sidecar has a `skipped-done` record (handles `done_dir`-moved files) |
+| PROCESSING    | Workdir contains ≥1 `enc_src_*.mkv` AND the most recent history record has `status: in_progress` |
+| QUEUED        | Everything else (a workdir with chunks but no `in_progress` history is flagged as `stale workdir from prior run` in Notes) |
+
+Add `--status-json` for machine-readable output (one JSON list of row dicts).
+
 ### Launcher (`run_queue.bat`)
 
 **Whenever you write a `queue.json`, also write a `run_queue.bat` next to it** so the user can start the encode by double-clicking instead of typing the python invocation. Use this exact template, saved UTF-8 without BOM and with **CRLF (Windows) line endings** — cmd.exe mis-parses LF-only .bat files, dropping leading characters per line (`chcp`→`cp`, `title`→`tle`):

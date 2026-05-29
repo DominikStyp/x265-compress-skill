@@ -3,6 +3,21 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.12.0] — 2026-05-29
+
+### Added
+- **`run_queue.py --status` — read-only queue inspector.** Prints a single
+  consolidated table covering every job in `queue.json`, classified as
+  DONE / PROCESSING / QUEUED / MISSING INPUT, with per-file sizes / CRF /
+  wall time / savings + an aggregate "Totals (finished)" line. Reconciles
+  four data sources (queue.json + encoding_history.jsonl + workdir state +
+  on-disk outputs + queue_state sidecar) so the user doesn't have to
+  `tail`/`jq`/`ls` four places. Strictly read-only — no encoding, no side
+  effects. `--status-json` adds machine-readable output. Stale workdir
+  detection: a workdir with `enc_src_*.mkv` but no `in_progress` history
+  record is classified QUEUED with a `stale workdir from prior run` note,
+  not falsely PROCESSING.
+
 ## [1.11.0] — 2026-05-29
 
 ### Added
