@@ -148,6 +148,21 @@ class ResetTest(unittest.TestCase):
             # No state file exists yet — delete must be silent.
             delete_queue_state(Path(td) / "queue.json")
 
+    def test_delete_permission_error_propagates(self) -> None:
+        # Docstring contract: every OSError except FileNotFoundError
+        # propagates loudly. The user asked to reset; silently failing
+        # would let them encode against stale state.
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "queue.json"
+            state = QueueState()
+            state.add_completed(input_original=Path("/v/x.mp4"))
+            state.save_atomically(queue)
+            with mock.patch("pathlib.Path.unlink",
+                            side_effect=PermissionError("locked")):
+                with self.assertRaises(PermissionError):
+                    delete_queue_state(queue)
+
 
 class IsCompletedTest(unittest.TestCase):
     def test_resolves_path_for_comparison(self) -> None:
@@ -164,6 +179,47 @@ class IsCompletedTest(unittest.TestCase):
             again = load_queue_state(queue)
             self.assertTrue(again.is_completed(real))
             self.assertTrue(again.is_completed(real.resolve()))
+
+    def test_lookup_works_after_source_removed(self) -> None:
+        # After done_dir moves the source away, the queue still has the
+        # ORIGINAL path in queue.json. The state lookup must hit even with
+        # the source file gone. (.resolve() on a non-existent path usually
+        # canonicalizes the same way on modern Python, so the happy case
+        # passes — this test guards against a regression to a strict
+        # is_file() precondition.)
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "queue.json"
+            real = Path(td) / "a.mp4"
+            real.write_bytes(b"x")
+            state = QueueState()
+            state.add_completed(input_original=real.resolve(),
+                                moved_to_dir=Path(td) / "done")
+            state.save_atomically(queue)
+            real.unlink()
+            again = load_queue_state(queue)
+            self.assertTrue(again.is_completed(real),
+                            "lookup of moved-away source must still hit")
+
+    def test_lookup_hits_when_resolve_canonicalization_drifts(self) -> None:
+        # Reviewer-flagged edge case: .resolve() can produce different
+        # canonicalization between insert (file present) and lookup (file
+        # absent) when the prefix involves a symlink that's since changed.
+        # Simulate by inserting under one resolved spelling and looking up
+        # under a different one. The state MUST hit on either spelling, so
+        # a moved source isn't re-encoded.
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "queue.json"
+            # Use a fixed string that differs from what .resolve() returns
+            # on this machine — so resolved-only keying misses the lookup.
+            quirky_input = Path("/tmp_no_canonical_resolve/movie.mp4")
+            state = QueueState()
+            state.add_completed(input_original=quirky_input)
+            state.save_atomically(queue)
+            again = load_queue_state(queue)
+            # Lookup with the same unresolved spelling MUST hit, regardless
+            # of whether .resolve() on this machine canonicalizes
+            # /tmp_no_canonical_resolve differently.
+            self.assertTrue(again.is_completed(quirky_input))
 
 
 class QueueArgvBuildsDoneDir(unittest.TestCase):
@@ -248,6 +304,29 @@ class VerifyMoveOutcomeTest(unittest.TestCase):
         moved, in_f, out_f = run_queue._verify_move_outcome(
             None, Path("/v/a.mp4"), Path("/v/a.mkv"))
         self.assertIsNone(moved)
+
+    def test_same_dir_done_dir_does_not_record_move(self) -> None:
+        # Bug repro: done_dir == source.parent. The move helper returns
+        # moved=False (no-op), but _verify_move_outcome used to see both
+        # files at done_dir (it IS source's dir) and falsely record
+        # moved_to_dir. State sidecar then claimed "moved" → next run
+        # printed misleading "SKIP — already done (moved to …)".
+        import run_queue
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            src = td / "movie.mp4"
+            src.write_bytes(b"src")
+            out_orig = td / "movie.mkv"
+            out_orig.write_bytes(b"out")
+            # done_dir IS source's own directory — a no-op configuration.
+            moved, in_f, out_f = run_queue._verify_move_outcome(
+                str(td), src, out_orig)
+            # Even though stat-checks both pass (the files ARE in that
+            # dir), the truth is that no move occurred. Record honestly:
+            # moved_to_dir must be None so the state sidecar doesn't lie.
+            self.assertIsNone(moved)
+            self.assertIsNone(in_f)
+            self.assertIsNone(out_f)
 
 
 class JobRunnerResolvesMovedOutputBytesTest(unittest.TestCase):

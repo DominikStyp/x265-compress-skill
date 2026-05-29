@@ -144,15 +144,24 @@ def _skip_if_missing_or_existing(merged: dict, *, i: int, n: int,
 
 def _pick_next_job(jobs: list[dict], seen_inputs: set[str],
                   attempted_inputs: set[str]) -> dict | None:
-    """Walk the current snapshot in order, growing seen_inputs (which is
-    the report-table denominator — never shrinks) and returning the first
-    unattempted job. Returns None if every job has been attempted."""
+    """Walk the current snapshot in full, growing seen_inputs (the
+    report-table denominator — never shrinks) over the WHOLE queue, then
+    return the first unattempted job. Returns None if every job has been
+    attempted.
+
+    The full-snapshot walk matters: the denominator drives the `[i/n]`
+    banner and `compute_queue_counters(total_jobs=...)` for the
+    on_file_complete hook. An early-return after picking job 1 of a
+    5-job queue used to leave `len(seen_inputs) == 1`, so the banner
+    showed `[1/1]` and `X265_QUEUE_TOTAL` reported `1` until the second
+    job was picked."""
+    picked: dict | None = None
     for raw in jobs:
         input_str = str(Path(raw["input"]).resolve())
         seen_inputs.add(input_str)
-        if input_str not in attempted_inputs:
-            return raw
-    return None
+        if picked is None and input_str not in attempted_inputs:
+            picked = raw
+    return picked
 
 
 def _print_summary_table(job_reports: list[dict]) -> None:
@@ -314,7 +323,11 @@ def _record_completion(queue_state, queue_path: Path, row: dict,
                                   .strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
         queue_state.save_atomically(queue_path)
-    except Exception as e:
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        # Narrow catch per AGENTS.md: broad `except Exception` is reserved
+        # for daemon-thread guard seams. State-sidecar failure must never
+        # abort the queue, but the specific exceptions we can plausibly
+        # see here are all I/O- or shape-related — list them explicitly.
         print(f"WARNING: state sidecar update failed: {e}", file=sys.stderr)
 
 
@@ -323,7 +336,10 @@ def _verify_move_outcome(done_dir_cfg, input_path: Path,
     """Look at disk truth: are source+output at done_dir, or still at the
     original location? Returns (moved_to_dir, input_final, output_final)
     with all three set when the move succeeded, all three None when no
-    done_dir was configured OR the move was refused/failed.
+    done_dir was configured, the move was refused/failed, OR done_dir
+    resolves to the same directory as the source (a no-op configuration
+    where the stat-checks would falsely register as "moved" because the
+    files ARE in that directory — they just never went anywhere).
 
     A partial state (output moved but source not) is recorded conservatively
     as "no move" — the state sidecar's invariant is "if moved_to_dir is set,
@@ -333,11 +349,30 @@ def _verify_move_outcome(done_dir_cfg, input_path: Path,
     if not done_dir_cfg:
         return None, None, None
     done_dir = Path(done_dir_cfg)
+    if _same_dir(done_dir, input_path.parent):
+        # done_dir == source's own directory → move_to_done_dir was a
+        # no-op. Record no move (files never went anywhere) so the state
+        # sidecar's "moved_to_dir set ⇒ files are at that location"
+        # invariant holds.
+        return None, None, None
     input_at_done = done_dir / input_path.name
     output_at_done = done_dir / output_original.name
     if input_at_done.exists() and output_at_done.exists():
         return done_dir, input_at_done, output_at_done
     return None, None, None
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    """True iff a and b refer to the same on-disk directory. Path.samefile
+    is the canonical comparison (case-insensitive on Windows NTFS); falls
+    back to a resolved-string compare when one side doesn't exist yet."""
+    try:
+        return a.samefile(b)
+    except OSError:
+        try:
+            return a.resolve() == b.resolve()
+        except OSError:
+            return str(a) == str(b)
 
 
 def _should_halt_after(status: str, stop_on_failure: bool) -> bool:

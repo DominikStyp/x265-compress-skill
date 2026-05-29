@@ -189,6 +189,30 @@ class MoveToDoneDirTest(unittest.TestCase):
             self.assertFalse((tmp / "movie.hooks.json").exists())
             self.assertTrue((tmp / "movie.preflight.json").exists())
 
+    def test_hooks_sidecar_deleted_for_mkv_source(self) -> None:
+        # Reviewer-flagged bug: when the source is `.mkv`, derive_output_path
+        # produces `<stem>.x265.mkv`, so `output.stem` is `<stem>.x265` and
+        # the cleanup looked for `<stem>.x265.hooks.json` — but the file is
+        # written by script_writer as `<source.stem>.hooks.json` (i.e.
+        # `<stem>.hooks.json`). The sidecar leaked into archive.
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            src = td / "movie.mkv"
+            src.write_bytes(b"src")
+            out = td / "movie.x265.mkv"   # derive_output_path's name
+            out.write_bytes(b"out")
+            tmp = td / ".tmp"
+            tmp.mkdir()
+            # Hooks sidecar keyed on SOURCE stem (per script_writer).
+            (tmp / "movie.hooks.json").write_text(
+                '{"on_chunk_done": ["x"]}', encoding="utf-8")
+            done = td / "done"
+            done.mkdir()
+            move_to_done_dir(source=src, output=out, done_dir=done,
+                             workdir=tmp, sidecar_dir=tmp)
+            self.assertFalse((tmp / "movie.hooks.json").exists(),
+                             "hooks sidecar should have been deleted")
+
 
 if __name__ == "__main__":
     unittest.main()

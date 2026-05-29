@@ -28,7 +28,14 @@ from typing import Iterable
 
 # Status -> aggregate category. Mirror of run_queue.py's _CLEAN_STATUSES and
 # _ATTENTION_STATUSES — kept here so this module is self-contained for tests.
-_FINISHED_STATUSES = {"ok"}
+#
+# `skipped-done` is included in FINISHED because the state-sidecar record
+# carries faithful prior-run input/output byte measurements; aggregating
+# those preserves the file_complete hook's "cumulative savings" contract
+# across sessions. `skipped-exists` deliberately stays in SKIPPED — the
+# output file happened to exist on disk but we have no prior-run metadata
+# attesting to its bytes, so claiming them as our savings would be a lie.
+_FINISHED_STATUSES = {"ok", "skipped-done"}
 _FAILED_STATUSES_PREFIXES = ("failed",)  # "failed-gen" / "failed-exit-N" / ...
 _STOPPED_STATUSES = {
     "stopped-threshold", "stopped-threshold-crf-exhausted",

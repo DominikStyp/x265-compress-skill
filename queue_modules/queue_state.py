@@ -147,10 +147,11 @@ def load_queue_state(queue_path: Path) -> QueueState:
 
 
 def delete_queue_state(queue_path: Path) -> None:
-    """`--reset-state` implementation: silently drop the sidecar. No-op if
-    missing. OSError on a permissions/locked-file issue is intentionally
-    NOT swallowed — the user asked to reset, so a silent failure would be
-    misleading."""
+    """`--reset-state` implementation: drop the sidecar. No-op if missing
+    (FileNotFoundError swallowed). Every other OSError (permissions, file
+    locked by another reader, read-only mount) intentionally PROPAGATES —
+    the user explicitly asked to reset, so failure must be loud, not
+    silent."""
     sidecar = state_path_for(queue_path)
     try:
         sidecar.unlink()

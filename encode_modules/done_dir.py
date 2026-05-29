@@ -115,7 +115,12 @@ def move_to_done_dir(*,
     shutil.move(str(source), str(dest_source))
 
     if sidecar_dir is not None:
-        _cleanup_sidecars(sidecar_dir, output.stem)
+        # Sidecars are keyed on the SOURCE stem by `script_writer.py`
+        # (and the workdir uses the same key). For an `.mkv` source the
+        # output stem is `<name>.x265`, which doesn't match — using
+        # `output.stem` here would silently miss the cleanup and leak the
+        # hooks sidecar into archive. Always source.stem.
+        _cleanup_sidecars(sidecar_dir, source.stem)
 
     return MoveResult(source_final=dest_source,
                       output_final=dest_output, moved=True)

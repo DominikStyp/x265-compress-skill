@@ -95,6 +95,51 @@ class ComputeQueueCountersTest(unittest.TestCase):
         # No div-by-zero / NaN.
         self.assertNotIn("inf", env["X265_QUEUE_PCT_SAVED_SO_FAR"].lower())
 
+    def test_skipped_done_counts_toward_finished_and_bytes(self) -> None:
+        # Reviewer-flagged bug: after v1.11.0's state sidecar work, a
+        # re-run records previously-completed jobs as `skipped-done` with
+        # the original bytes_in/bytes_out (faithful prior-run metadata).
+        # Excluding them from the aggregate made X265_QUEUE_BYTES_*_SO_FAR
+        # / PCT_SAVED_SO_FAR reset to 0 on every relaunch — the
+        # file_complete hook's "cumulative savings" contract was broken
+        # across sessions.
+        #
+        # Distinct from `skipped-exists` (which means "output happened to
+        # be on disk, provenance unknown" — kept in the SKIPPED category
+        # because we shouldn't claim those byte counts as our work).
+        history = [
+            {"status": "skipped-done", "input_bytes": 1_000_000_000,
+             "output_bytes": 600_000_000},
+            {"status": "skipped-done", "input_bytes": 2_000_000_000,
+             "output_bytes": 1_400_000_000},
+            # An ok in this run on top — should still aggregate.
+            {"status": "ok", "input_bytes": 500_000_000,
+             "output_bytes": 300_000_000},
+        ]
+        env = compute_queue_counters(history, total_jobs=5,
+                                     queue_wall_seconds=0.0,
+                                     upcoming_index=4)
+        # All three count as finished (two prior, one current).
+        self.assertEqual(env["X265_QUEUE_ITEMS_FINISHED"], "3")
+        self.assertEqual(env["X265_QUEUE_BYTES_IN_SO_FAR"],
+                         str(3_500_000_000))
+        self.assertEqual(env["X265_QUEUE_BYTES_OUT_SO_FAR"],
+                         str(2_300_000_000))
+        self.assertEqual(env["X265_QUEUE_ITEMS_SKIPPED"], "0")
+
+    def test_skipped_exists_still_counts_as_skipped_not_finished(self
+                                                                  ) -> None:
+        # Boundary case: deliberately NOT moved into FINISHED. The output
+        # was on disk for reasons we can't attribute to a prior queue run,
+        # so we don't claim its bytes as savings.
+        history = [_row("skipped-exists", 500_000_000, 300_000_000)]
+        env = compute_queue_counters(history, total_jobs=2,
+                                     queue_wall_seconds=0.0,
+                                     upcoming_index=2)
+        self.assertEqual(env["X265_QUEUE_ITEMS_FINISHED"], "0")
+        self.assertEqual(env["X265_QUEUE_ITEMS_SKIPPED"], "1")
+        self.assertEqual(env["X265_QUEUE_BYTES_IN_SO_FAR"], "0")
+
     def test_safe_int_handles_none_output_bytes(self) -> None:
         # build_job_row returns output_bytes=None for placeholder rows.
         # That must not blow up the aggregate sum.

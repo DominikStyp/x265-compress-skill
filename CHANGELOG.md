@@ -3,6 +3,55 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.12.1] — 2026-05-29
+
+### Fixed
+Patch round from a multi-agent code audit. All findings actioned with
+matching tests; full suite 347 green.
+
+- **Queue `[i/n]` banner + `X265_QUEUE_TOTAL` / `_REMAINING` were always
+  wrong on early jobs.** `_pick_next_job` walked the snapshot and returned
+  at the FIRST unattempted job — `seen_inputs` only grew up to that point.
+  On job 1 of a 5-job queue the banner read `[1/1]` and the file_complete
+  hook reported `X265_QUEUE_TOTAL=1`, `X265_QUEUE_ITEMS_REMAINING=0`. The
+  picker now walks the full snapshot before returning, so the denominator
+  reflects the true queue size from the first pick.
+- **Same-directory `done_dir` falsely recorded `moved_to_dir`.** When
+  `done_dir` resolved to the source's own directory, `move_to_done_dir`
+  returned `moved=False` (correct no-op) — but `_verify_move_outcome`
+  stat'd both files at that dir, saw them, and recorded "moved" in the
+  state sidecar. Next run printed misleading `SKIP — already done (moved
+  to …)`. `_verify_move_outcome` now detects the same-dir case and
+  returns no-move.
+- **Hooks sidecar leaked into archive on `.mkv` sources.** `move_to_done_dir`
+  passed `output.stem` to `_cleanup_sidecars`, but `script_writer` writes
+  the sidecar as `<source.stem>.hooks.json`. For `movie.mkv` →
+  `movie.x265.mkv`, `output.stem == "movie.x265"`, so the cleanup looked
+  for `movie.x265.hooks.json` (which doesn't exist) and silently no-op'd.
+  Fixed by passing `source.stem`; the hooks sidecar is now deleted as
+  documented.
+- **`X265_QUEUE_BYTES_*_SO_FAR` reset to 0 every queue relaunch.**
+  `compute_queue_counters` excluded `skipped-done` from byte aggregation,
+  even though the state sidecar carries faithful prior-run input/output
+  byte measurements. The file_complete hook's "cumulative savings"
+  contract was broken across sessions. `skipped-done` now counts in both
+  `ITEMS_FINISHED` and the byte aggregates (deliberately distinct from
+  `skipped-exists`, which has no provenance for its bytes).
+
+### Changed
+- `run_script` now accepts an optional `timeout` parameter (default
+  unbounded, preserving long-encode behaviour). The docstring documents
+  the deliberate exception to AGENTS.md's "every subprocess has a
+  timeout" rule (which is scoped to probe-style calls). A `TimeoutExpired`
+  is mapped to exit-code 124 (GNU coreutils convention) rather than
+  raised, so the queue runner's normal status-mapping logic handles it.
+- `delete_queue_state` docstring no longer claims "silently drop" —
+  every OSError except `FileNotFoundError` propagates loudly. The
+  `--reset-state` user explicitly asked for the action.
+- Narrowed a broad `except Exception` in `_record_completion` to
+  `(OSError, ValueError, KeyError, TypeError)` per AGENTS.md's "broad
+  except only at daemon-thread guard seams" rule.
+
 ## [1.12.0] — 2026-05-29
 
 ### Added

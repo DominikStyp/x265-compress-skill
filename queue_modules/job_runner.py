@@ -60,7 +60,8 @@ def generate_bat(compress_py: Path, merged_job: dict
         return 0, None, f"parse error: {e}"
 
 
-def run_script(script_path: str) -> tuple[int, float]:
+def run_script(script_path: str, *,
+               timeout: float | None = None) -> tuple[int, float]:
     """Run the encoder script that compress.py just wrote. Dispatches to
     cmd.exe on Windows or bash on POSIX. Returns (exit_code, elapsed_seconds).
 
@@ -78,12 +79,29 @@ def run_script(script_path: str) -> tuple[int, float]:
     POSIX: `bash <path>` works regardless of executable bit (chmod failures
     on FAT/SMB filesystems would otherwise leave the script unrunnable).
     Bash handles single-quoted paths with `&`, `[`, `]`, `(`, `)` natively
-    when assigned to variables via `_SKILL_IN='...'`."""
+    when assigned to variables via `_SKILL_IN='...'`.
+
+    **Deliberate exception to AGENTS.md's "every subprocess has a timeout"
+    rule.** That rule is scoped to PROBE-style calls (ffprobe, version
+    checks) where unbounded hangs are pure cost. The encoder script can
+    legitimately run for hours — a 4K x265 source at preset slow takes
+    well past 24h. A wrapping timeout here would have to be larger than
+    any realistic encode, at which point it's not catching anything that
+    a process-monitor wouldn't catch sooner. Callers who want a hard
+    backstop can pass `timeout=N` explicitly; default is unbounded."""
     t0 = time.monotonic()
-    if IS_WINDOWS:
-        rc = subprocess.call(["cmd.exe", "/c", "call", script_path])
-    else:
-        rc = subprocess.call(["bash", script_path])
+    try:
+        if IS_WINDOWS:
+            rc = subprocess.call(["cmd.exe", "/c", "call", script_path],
+                                 timeout=timeout)
+        else:
+            rc = subprocess.call(["bash", script_path], timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Surface as a non-zero rc so the caller sees "failed" rather
+        # than swallowing the exception. Re-raise if the caller wants
+        # to special-case it would need a wrapping try/except — kept
+        # simple here because the default code path is timeout=None.
+        return 124, time.monotonic() - t0  # 124 = GNU coreutils' "timeout"
     return rc, time.monotonic() - t0
 
 
