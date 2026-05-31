@@ -38,18 +38,18 @@ from platform_compat import enable_utf8_io
 from queue_modules.job_runner import run_job_with_crf_retry
 from queue_modules.job_schema import derive_output_path, merge_job
 from queue_modules.queue_counters import compute_queue_counters, overlay_env
-from queue_modules.queue_io import reload_queue_with_retry
+from queue_modules.queue_io import emit_status_record, reload_queue_with_retry
+from queue_modules.queue_item_hook import dispatch_on_queue_item_end
 from queue_modules.queue_state import (
     delete_queue_state,
     load_queue_state,
 )
-from queue_modules.status import (
-    classify as _status_classify,
-    history_by_input as _status_history_by_input,
-    render_json as _status_render_json,
-    render_table as _status_render_table,
-)
-import history as _history_module
+from queue_modules.status import run_inspector as _run_status_inspector
+
+# Re-export so `from run_queue import _emit_json_status` (the test in
+# test_queue_exit_codes uses this name) keeps working after the helper
+# moved into queue_modules.queue_io. New code should use the public name.
+_emit_json_status = emit_status_record
 
 
 def _parse_args() -> argparse.Namespace:
@@ -207,39 +207,6 @@ _ATTENTION_STATUSES = {
 }
 
 
-def _run_status_inspector(queue_path: Path, *, as_json: bool) -> int:
-    """`--status` entry point. Reads queue.json + encoding_history.jsonl +
-    workdir state + on-disk outputs + state sidecar, classifies every job,
-    prints the result, exits 0. Strictly read-only — touches nothing on
-    disk except for stat()-style queries."""
-    _, defaults, jobs_raw = reload_queue_with_retry(queue_path)
-    if not jobs_raw:
-        print("(queue is empty)")
-        return 0
-    from queue_modules.job_schema import expand_jobs
-    jobs = expand_jobs(jobs_raw, queue_path.parent)
-    history = _status_history_by_input(_history_module.default_history_path())
-    state = load_queue_state(queue_path)
-    rows = []
-    for raw in jobs:
-        merged = merge_job(defaults, raw)
-        row = _status_classify(merged, queue_dir=queue_path.parent,
-                               history=history, state=state)
-        # Number the rows in the order queue.json lists them.
-        rows.append(row)
-    # Set the index field for display — dataclass is frozen-by-default? no,
-    # it isn't, so we mutate in place.
-    for i, r in enumerate(rows, 1):
-        r.index = i
-    if as_json:
-        print(_status_render_json(rows))
-    else:
-        print(f"Queue: {queue_path}")
-        print()
-        print(_status_render_table(rows, totals=True))
-    return 0
-
-
 def _aggregate_exit_code(job_reports: list[dict]) -> int:
     """Map the run's per-job statuses to a process exit code so a fleet
     runner can branch on $?:
@@ -266,27 +233,6 @@ def _aggregate_exit_code(job_reports: list[dict]) -> int:
     if has_attention:
         return 2
     return 0
-
-
-def _emit_json_status(path, row: dict) -> None:
-    """Append one NDJSON record for a finished job so a fleet monitor can
-    `tail -f` the queue's progress. Kept off stdout (which stays human-
-    readable). Best-effort — a logging hiccup must never break the run."""
-    try:
-        rec = {
-            "input": row.get("input"),
-            "status": row.get("status"),
-            "output": row.get("output"),
-            "input_bytes": row.get("input_bytes"),
-            "output_bytes": row.get("output_bytes"),
-            "elapsed_seconds": row.get("elapsed_seconds"),
-            "vmaf_mean": row.get("vmaf_mean"),
-        }
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec) + "\n")
-            fh.flush()
-    except Exception as e:
-        print(f"WARNING: --json-status write failed: {e}", file=sys.stderr)
 
 
 def _record_completion(queue_state, queue_path: Path, row: dict,
@@ -519,6 +465,19 @@ def main() -> int:
         # exists on disk).
         if status == "ok":
             _record_completion(queue_state, queue_path, row, merged)
+
+        # Queue-side notification: render the full `[OK]`/`[FAILED]`/`[..]`
+        # snapshot and fire on_queue_item_end if configured. Best-effort —
+        # a notification problem must never abort a queue that may have
+        # hours of work left. Fires AFTER the state sidecar is on disk
+        # (audit trail before side-effects) and BEFORE the halt check so
+        # the user gets a notification for the final job too.
+        log_line = dispatch_on_queue_item_end(
+            merged=merged, jobs_snapshot=jobs, job_reports=job_reports,
+            status=status, row=row,
+        )
+        if log_line:
+            print(log_line, file=sys.stderr)
 
         if _should_halt_after(status, args.stop_on_failure):
             if status == "stopped-by-user":

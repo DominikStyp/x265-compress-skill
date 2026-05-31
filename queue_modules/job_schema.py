@@ -38,10 +38,13 @@ VALID_KEYS: set[str] = {
     "on_file_complete",
     "done_dir",
     # Queue-only keys (consumed by the queue runner, NOT forwarded to
-    # compress.py argv): auto-escalate CRF when the size guard stops a job.
+    # compress.py argv): auto-escalate CRF when the size guard stops a job;
+    # fire the queue-side `on_queue_item_end` notification with the full
+    # `[OK]` / `[FAILED]` / `[..]` snapshot after each finished job.
     "retry_with_bigger_crf",
     "crf_step",
     "crf_max",
+    "on_queue_item_end",
 }
 
 

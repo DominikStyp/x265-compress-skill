@@ -439,6 +439,7 @@ Object with `defaults` (recommended — set things once, override per file):
 | `eight_bit` | `--eight-bit` | bool |
 | `resumable` | `--resumable` | bool, **default `true` in queue mode** |
 | `on_chunk_done` | `--on-chunk-done` | argv list (or bare string) run after each chunk — see **Chunk-finished hook** below |
+| `on_queue_item_end` | queue-only | argv list (or bare string) run after each finished job with the full queue snapshot — see **Queue-progress hook** below |
 | `retry_with_bigger_crf` | queue-only | bool, default `false` — auto-retry a size-guard-stopped job at higher CRF (see **Auto-retry on size guard** below) |
 | `crf_step` | queue-only | int, default `1` — how much to raise CRF per retry |
 | `crf_max` | queue-only | int, default `28` — stop escalating past this; emits `stopped-threshold-crf-exhausted` |
@@ -619,6 +620,63 @@ curl -fsS -X POST https://example.test/notify -d "title=${title}&body=${src}"
 ```
 
 Same best-effort discipline. The three hooks (`on_chunk_done`, `on_job_end`, `on_file_complete`) are independent — configure any subset.
+
+### Queue-progress hook (`on_queue_item_end`)
+
+The three hooks above all fire from *inside* the per-source encoder — they can only see one file's worth of context. `on_queue_item_end` fires from `run_queue.py` itself, **after every finished job (success OR failure)**, and ships a multi-line **snapshot of the whole queue** with `[OK]` / `[FAILED]` / `[..]` markers per job — perfect for "push me a status update after each file" notifications without parsing `job_reports`. Skip rows (output already on disk, input missing, prior-run completion) do NOT fire this hook — the spec is *fully processed OR failed*, and a skip is neither. Queue-only; no `compress.py` equivalent (it has no queue snapshot to show).
+
+```json
+{
+  "defaults": {
+    "on_queue_item_end": ["python3", "/home/me/notify_queue_progress.py"]
+  },
+  "jobs": [
+    {"input": "clip1.mp4"},
+    {"input": "clip2.mp4"},
+    {"input": "clip3.mp4"}
+  ]
+}
+```
+
+**Env vars passed:**
+
+| Variable | Example | Meaning |
+|---|---|---|
+| `X265_HOOK_EVENT` | `queue-item-end` | the event |
+| `X265_JOB_STATUS` | `ok` / `failed-gen` / `stopped-threshold` / … | terminal status of the just-finished job |
+| `X265_JOB_MARKER` | `[OK]` / `[FAILED]` | the marker used in the summary (convenience) |
+| `X265_SOURCE` | `/videos/clip2.mp4` | absolute input path of the just-finished job |
+| `X265_OUTPUT` | `/videos/clip2.mkv` | absolute output path (empty if not produced) |
+| `X265_QUEUE_STATUS_SUMMARY` | (multi-line) | full snapshot — see below |
+
+`X265_QUEUE_STATUS_SUMMARY` is a `\n`-joined block, one line per job in queue-snapshot order:
+
+```
+[ 1] [OK]     clip1.mp4
+[ 2] [FAILED] clip2.mp4
+[ 3] [..]     clip3.mp4
+```
+
+- `[OK]` — `ok`, `skipped-done`, `skipped-exists` (output is on disk)
+- `[FAILED]` — every other terminal status (failed-*, stopped-*, chunk-choked, awaiting-chunk-fix, pre-flight-failed, stopped-by-user, skipped-not-found, **and unknown statuses** — fail-safe so a new state surfaces loudly)
+- `[..]` — not yet attempted
+
+Minimal POSIX notifier (Pushbullet):
+
+```bash
+#!/usr/bin/env bash
+curl -fsS -u "$PUSHBULLET_TOKEN:" \
+  -d "type=note" \
+  -d "title=Queue $X265_JOB_MARKER · $(basename "$X265_SOURCE")" \
+  --data-urlencode "body=$X265_QUEUE_STATUS_SUMMARY" \
+  https://api.pushbullet.com/v2/pushes
+```
+
+**Same best-effort discipline as the other hooks** — 30 s timeout, missing / non-zero / NUL-bearing command logged but never aborts the queue. The state sidecar is on disk **before** the hook fires (audit-trail-before-side-effects), so a hang / crash in the notifier never costs a completion record. A falsy override (`null` / `[]` / `""`) in a per-job entry disables an inherited `defaults` hook for that one file.
+
+> **Notifier picks should be fast.** Unlike the in-encoder hooks, `on_queue_item_end` fires **synchronously inside the queue's per-job loop** (same as the others, but here it's between encodes rather than between chunks). A misconfigured notifier — slow webhook, DNS hang, dead endpoint — can inject up to 30 s of dead time per job into a long unattended run. Pick a notifier that completes in <1 s under normal conditions; if you need a slow / unreliable backend, wrap it in a tiny fire-and-forget shim (e.g. `python3 -c "import subprocess,sys; subprocess.Popen([...]); sys.exit(0)"`).
+>
+> **Windows `.bat` consumers**: `X265_QUEUE_STATUS_SUMMARY` is a multi-line value. `%X265_QUEUE_STATUS_SUMMARY%` in a `.bat` only reads the first line — and the `[` / `]` markers can trip cmd.exe parsing. Read the variable via `for /f "delims=" %%L in ('echo %X265_QUEUE_STATUS_SUMMARY%') do …`, or shell out to PowerShell (`pwsh -c "$env:X265_QUEUE_STATUS_SUMMARY"`), or use Python / WSH / any single-line `X265_*` variable instead.
 
 ### Archive a finished pair (`done_dir`)
 

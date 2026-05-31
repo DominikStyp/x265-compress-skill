@@ -3,7 +3,7 @@ runner is mid-flight is supported; the retry tolerates catching the file
 in an inconsistent state for a fraction of a second (most editors use
 atomic rename, but a few don't).
 
-Two functions:
+Three functions:
 
   load_queue            -- single-shot read, returns (defaults, raw_jobs).
                            Caller is responsible for `expand_jobs` on
@@ -13,10 +13,16 @@ Two functions:
                               retry after a short pause. Returns mtime
                               alongside the data so the runner can detect
                               whether the file actually changed.
+
+  emit_status_record    -- append one NDJSON record for a finished job so a
+                           fleet monitor can `tail -f` the queue's
+                           progress. Best-effort: a logging hiccup must
+                           never break the run.
 """
 from __future__ import annotations
 
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -59,3 +65,24 @@ def reload_queue_with_retry(queue_path: Path
                 time.sleep(0.4)
     assert last_exc is not None
     raise last_exc
+
+
+def emit_status_record(path, row: dict) -> None:
+    """Append one NDJSON record for a finished job so a fleet monitor can
+    `tail -f` the queue's progress. Kept off stdout (which stays human-
+    readable). Best-effort — a logging hiccup must never break the run."""
+    try:
+        rec = {
+            "input": row.get("input"),
+            "status": row.get("status"),
+            "output": row.get("output"),
+            "input_bytes": row.get("input_bytes"),
+            "output_bytes": row.get("output_bytes"),
+            "elapsed_seconds": row.get("elapsed_seconds"),
+            "vmaf_mean": row.get("vmaf_mean"),
+        }
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
+            fh.flush()
+    except Exception as e:
+        print(f"WARNING: --json-status write failed: {e}", file=sys.stderr)

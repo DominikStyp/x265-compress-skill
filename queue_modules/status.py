@@ -48,8 +48,9 @@ from typing import Optional
 # needs more.
 LIVENESS_WINDOW_SEC = 15 * 60
 
-from .job_schema import derive_output_path, derive_workdir
-from .queue_state import QueueState
+from .job_schema import derive_output_path, derive_workdir, expand_jobs, merge_job
+from .queue_io import reload_queue_with_retry
+from .queue_state import QueueState, load_queue_state
 
 
 @dataclass
@@ -379,6 +380,45 @@ def _fmt_wall(seconds: Optional[float]) -> str:
     if m:
         return f"{m}m {s:02d}s"
     return f"{s}s"
+
+
+def run_inspector(queue_path: Path, *, as_json: bool) -> int:
+    """`--status` entry point. Reads queue.json + encoding_history.jsonl +
+    workdir state + on-disk outputs + state sidecar, classifies every job,
+    prints the result, exits 0. Strictly read-only — touches nothing on
+    disk except for stat()-style queries.
+
+    Lives here (not in run_queue.py) so the orchestration loop stays
+    focused on what to do between jobs; this is a one-shot read-only
+    command that fits the status module's classify/render concerns.
+    """
+    # Local import to avoid a top-level cycle (run_queue.py imports this
+    # module via queue_modules.status, and history is a top-level package).
+    import history as _history_module
+
+    _, defaults, jobs_raw = reload_queue_with_retry(queue_path)
+    if not jobs_raw:
+        print("(queue is empty)")
+        return 0
+    jobs = expand_jobs(jobs_raw, queue_path.parent)
+    history = history_by_input(_history_module.default_history_path())
+    state = load_queue_state(queue_path)
+    rows: list[StatusRow] = []
+    for raw in jobs:
+        merged = merge_job(defaults, raw)
+        row = classify(merged, queue_dir=queue_path.parent,
+                       history=history, state=state)
+        rows.append(row)
+    # Number the rows in the order queue.json lists them.
+    for i, r in enumerate(rows, 1):
+        r.index = i
+    if as_json:
+        print(render_json(rows))
+    else:
+        print(f"Queue: {queue_path}")
+        print()
+        print(render_table(rows, totals=True))
+    return 0
 
 
 def _totals_line(rows: list[StatusRow]) -> str:

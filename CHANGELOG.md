@@ -3,6 +3,41 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.13.0] — 2026-05-31
+
+### Added
+- **`on_queue_item_end` — queue-side status notification hook.** Fires
+  from `run_queue.py` after every finished job (success *or* failure),
+  with `X265_QUEUE_STATUS_SUMMARY` carrying a `\n`-joined snapshot of
+  the whole queue marked `[OK]` / `[FAILED]` / `[..]` per job — so a
+  single push gives the user a complete "where we are" picture without
+  parsing `job_reports`. Configure under `defaults` (or per-job) in
+  queue.json:
+  ```json
+  {"defaults": {"on_queue_item_end": ["python3", "/x/notify.py"]}}
+  ```
+  Skip rows (output exists, input missing, prior-run completion) do NOT
+  fire — the spec is "fully processed OR failed", which a skip is
+  neither. Same best-effort discipline as the in-encoder hooks (30 s
+  timeout, NUL-argv defended, failures logged, queue never aborted).
+  State sidecar is on disk BEFORE the hook fires (audit-trail-before-
+  side-effects). Env vars passed: `X265_HOOK_EVENT=queue-item-end`,
+  `X265_JOB_STATUS`, `X265_JOB_MARKER` (`[OK]` / `[FAILED]`),
+  `X265_SOURCE`, `X265_OUTPUT`, `X265_QUEUE_STATUS_SUMMARY`. The marker
+  classifier is fail-safe — any unknown status (e.g. one added by a
+  future upstream change) maps to `[FAILED]` rather than silently
+  looking healthy.
+
+### Changed
+- `run_queue.py` moved its `_run_status_inspector` helper into
+  `queue_modules/status.py` as `run_inspector`, and its
+  `_emit_json_status` helper into `queue_modules/queue_io.py` as
+  `emit_status_record`. Behaviour-preserving; the old names are kept as
+  re-exports on `run_queue` so `from run_queue import _emit_json_status`
+  (and the existing test that uses it) keep working. The refactor was
+  needed to keep `run_queue.py` under the project's 500-line cap after
+  wiring in the new hook.
+
 ## [1.12.1] — 2026-05-29
 
 ### Fixed
