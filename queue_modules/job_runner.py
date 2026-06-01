@@ -3,6 +3,14 @@ then build the report row.
 
 Extracted from run_queue.main()'s while-loop so the loop itself stays focused
 on what to do *between* jobs (live-reload, skip rules, summary stats).
+
+The `retry_with_bigger_crf` escalation loop (incl. v1.15.0 adaptive jump +
+state persistence + floor detector) lives in the sibling `crf_retry` module
+to keep this file focused on single-attempt execution and stay under the
+project's 500-line cap. References to `run_one_job` and
+`supersede_encoded_chunks` from the retry loop go through the module (not
+direct symbol imports) so tests that monkey-patch those names on
+`job_runner` continue to work unchanged.
 """
 from __future__ import annotations
 
@@ -258,49 +266,3 @@ def supersede_encoded_chunks(workdir: Path, old_crf: int) -> int:
             print(f"  WARNING: could not set aside {f.name}: {e}",
                   file=sys.stderr)
     return moved
-
-
-def run_job_with_crf_retry(*, compress_py: Path, merged: dict,
-                          i: int, n: int) -> tuple[str, dict]:
-    """run_one_job, plus the opt-in `retry_with_bigger_crf` escalation.
-
-    When a job stops on the size guard (`stopped-threshold`) and the job has
-    `retry_with_bigger_crf`, re-encode the SAME source at a higher CRF until it
-    fits under `max_size_percent` or `crf_max` is reached. Each attempt
-    escalates from the CRF the previous attempt actually ran at (so an
-    auto-picked CRF is handled correctly), reuses the lossless split, and sets
-    the superseded encoded chunks aside. No flag = exactly the old behavior."""
-    status, row = run_one_job(compress_py=compress_py, merged=merged, i=i, n=n)
-    if not merged.get("retry_with_bigger_crf"):
-        return status, row
-
-    # Coerce loudly-but-safely: a typo'd crf_step/crf_max in queue.json must
-    # not crash the whole queue mid-run after attempt 1 already encoded. Bail
-    # to no-escalation (return the first result) the same way a missing CRF does.
-    try:
-        crf_step = max(1, int(merged.get("crf_step", DEFAULT_CRF_STEP)))
-        crf_max = int(merged.get("crf_max", DEFAULT_CRF_MAX))
-    except (TypeError, ValueError):
-        print("  retry_with_bigger_crf: invalid crf_step/crf_max in queue.json; "
-              "not escalating.", file=sys.stderr)
-        return status, row
-    workdir = derive_workdir(Path(merged["input"]))
-
-    while status == "stopped-threshold":
-        used_crf = row.get("crf")
-        if used_crf is None:
-            print("  retry_with_bigger_crf: could not determine the CRF used; "
-                  "not escalating.")
-            return status, row
-        next_crf = int(used_crf) + crf_step
-        if next_crf > crf_max:
-            print(f"  size guard still hit at CRF {used_crf}; CRF cap "
-                  f"{crf_max} reached — giving up ({CRF_EXHAUSTED_STATUS}).")
-            row["status"] = CRF_EXHAUSTED_STATUS
-            return CRF_EXHAUSTED_STATUS, row
-        moved = supersede_encoded_chunks(workdir, int(used_crf))
-        print(f"  size guard hit at CRF {used_crf}; retrying at CRF "
-              f"{next_crf} (cap {crf_max}; set aside {moved} encoded chunk(s)).")
-        status, row = run_one_job(compress_py=compress_py,
-                                 merged={**merged, "crf": next_crf}, i=i, n=n)
-    return status, row

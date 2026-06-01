@@ -35,7 +35,7 @@ import time
 
 from encode_modules.done_dir import resolve_done_dir
 from platform_compat import enable_utf8_io
-from queue_modules.job_runner import run_job_with_crf_retry
+from queue_modules.crf_retry import run_job_with_crf_retry
 from queue_modules.job_schema import derive_output_path, merge_job
 from queue_modules.queue_counters import compute_queue_counters, overlay_env
 from queue_modules.queue_io import emit_status_record, reload_queue_with_retry
@@ -45,6 +45,7 @@ from queue_modules.queue_state import (
     load_queue_state,
 )
 from queue_modules.status import run_inspector as _run_status_inspector
+import history as _history_module
 
 # Re-export so `from run_queue import _emit_json_status` (the test in
 # test_queue_exit_codes uses this name) keeps working after the helper
@@ -451,9 +452,13 @@ def main() -> int:
             upcoming_index=job_counter,
         )
         with overlay_env(counter_env):
+            # queue_state / queue_path / history_path wire the v1.15.0
+            # adaptive CRF-jump escalation (see queue_modules/crf_retry).
             status, row = run_job_with_crf_retry(
                 compress_py=compress_py, merged=merged,
                 i=job_counter, n=len(seen_inputs),
+                queue_state=queue_state, queue_path=queue_path,
+                history_path=_history_module.default_history_path(),
             )
         job_reports.append(row)
         if args.json_status:

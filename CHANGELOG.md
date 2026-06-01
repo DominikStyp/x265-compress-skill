@@ -3,6 +3,109 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.15.0] — 2026-06-01
+
+### Added
+- **Adaptive CRF-jump escalation (`crf_jump`).** Opt-in (default
+  `false` → byte-identical to v1.14.x at the *step-decision* level).
+  Replaces the blind `+crf_step` walk with `next_crf = c + ceil(K ·
+  log2(P/T))` where `P` is the encoder's projected output % and
+  `T = max_size_percent - crf_jump_margin`. Median K ≈ 6 matches the
+  x265 textbook value and the bulk of real history. Collapses 3–4
+  probe encodes to ~1 when the configured CRF is far from the
+  size-feasible CRF — measured on the user's own history, an
+  `19 → 20 → 21 → 22 → 23` ladder becomes `19 → 23` in one jump.
+  Four new queue.json defaults / per-job keys:
+  - `crf_jump` — bool, default `false`.
+  - `crf_jump_k` — number, default `6.0`. Pass `"auto"` to calibrate
+    per-job from the last two probes' projections (`K_obs = -ΔCRF /
+    log2(P2/P1)`, clamped to `[4, 9]`).
+  - `crf_jump_margin` — float, default `5.0` % points UNDER
+    `max_size_percent` (the target T the jump aims for).
+  - `crf_floor_min_gain` — float, default `2.0` % points. See below.
+
+- **Diminishing-returns floor detector (`crf_floor_min_gain`).** Two
+  consecutive over-threshold probes whose projections improve by
+  less than `crf_floor_min_gain` % points (default 2.0) now emit
+  `stopped-threshold-crf-exhausted` after probe 2 instead of walking
+  to `crf_max`. Honest verdict for a source already at its
+  compression floor (the spec's Alyssa 21→22 case: 85.3% → 85.2%
+  across CRFs). On-by-default but **independent of `crf_jump`** —
+  fires on the blind-walk path too. Set `crf_floor_min_gain: 0` to
+  disable.
+
+- **Cross-restart escalation resume.** Every threshold-stop persists
+  `(last_crf_tried, last_projected_pct, last_threshold_pct,
+  attempts)` into `<queue_stem>.state.json`'s new optional
+  `in_progress_escalations` block. A restart resumes at
+  `max(configured_crf, last_crf_tried + step)` — the
+  `23 → 24 → [restart] → 23 → 24 → 25` replay the spec calls out
+  is eliminated. `ok` clears the entry. `--reset-state` drops the
+  sidecar entirely. On-by-default for `retry_with_bigger_crf` jobs
+  (per the spec's "Fix 2 on when `resumable`"). When the user has
+  LOWERED the configured CRF between runs, the resume still uses
+  the higher persisted value and prints a one-line NOTE pointing
+  the user at `--reset-state`.
+
+  **Schema-version stays at 1** — the `in_progress_escalations` field
+  is additive forward-compat. An older v1.14.x reader (which only
+  iterates `completed`) silently ignores the new top-level key. A
+  v1.15.0 reader on a v1.14.x sidecar reads as empty escalations
+  (today's behaviour).
+
+- **Encoder now writes the projection into the JSONL audit row.**
+  `encode_modules/history_state.py::_project_into_record` plants
+  `bytes_projected` / `bytes_threshold` / `projected_pct` /
+  `threshold_pct` into `current["output"]` before flushing — only
+  on threshold-stop runs (no-op on `ok`). This is the cross-process
+  channel the queue runner reads via `crf_jump.read_last_projection`.
+  Backward-compatible: existing JSONL records without these fields
+  parse unchanged; the queue reader returns None and falls back to
+  the blind `+crf_step` walk.
+
+### Changed
+- **Behaviour delta v1.14.x → v1.15.0 for `retry_with_bigger_crf` users
+  (even without setting any of the new keys):**
+  - Restart resumes at `last_crf_tried + step` instead of replaying
+    from `configured_crf` (Fix 2 on by default — `--reset-state` to
+    revert to v1.14.x replay-from-zero).
+  - A genuinely floor-bound source stops as
+    `stopped-threshold-crf-exhausted` after the second probe instead
+    of walking to `crf_max` (Fix 3 on by default at `min_gain=2.0` —
+    set `crf_floor_min_gain: 0` to revert).
+  - The step math itself stays byte-identical to v1.14.x when
+    `crf_jump: false` (default).
+
+- `queue_modules/job_runner.py` shrank from ~321 to 269 lines — the
+  CRF-retry loop machinery moved into the new
+  `queue_modules/crf_retry.py` (320 lines). References to
+  `run_one_job` and `supersede_encoded_chunks` from the retry loop
+  go through `from . import job_runner` (NOT direct symbol imports)
+  so existing test monkey-patches on `job_runner.<name>` keep
+  working unchanged.
+
+### Tests
+- 47 new cases across `tests/test_crf_jump.py` (math + floor detector
+  + history reader), `tests/test_queue_state_in_progress.py` (sidecar
+  round-trip + v1.14.x back-compat), and a new
+  `tests/test_crf_jump_integration.py` that scripts the full retry
+  loop against a fake `encoding_history.jsonl` written between
+  probes (Emily 19→23, resume-skips-walked-CRFs, floor early-stop,
+  blind-walk floor detection, `min_gain=0` opt-out walks to cap).
+- Reviewed by two independent reviewer subagents (NEEDS FIXES + PASS
+  WITH NITS). Spec-disagreement on R1's "Fix 2 should be crf_jump-gated"
+  was resolved against the reviewer (the spec explicitly says Fix 2
+  is on-by-default for `resumable`) and the behaviour delta is
+  documented in **Changed** above. R2's HIGH (floor-detector
+  gated behind crf_jump) was addressed by removing the gate — Fix 3
+  is now independent of Fix 1 per the spec. Caught a real bug in the
+  process: when `used_crf == crf_max`, `compute_next_crf` clamps to
+  `crf_max` so `next_crf == used_crf` and the loop would spin
+  forever; added a `next_crf <= used_crf` exhaustion check alongside
+  the existing `> crf_max` check. ASCII-only stderr (the floor
+  detector's `Δ` glyph crashed under Windows cp1250 stdout when not
+  run via `enable_utf8_io`).
+
 ## [1.14.0] — 2026-06-01
 
 ### Changed

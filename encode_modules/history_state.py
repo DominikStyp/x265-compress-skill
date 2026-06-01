@@ -189,6 +189,37 @@ class HistoryRecorder:
         on_job_end on the `ok` path (and skips it otherwise). None disables."""
         self._file_complete_hook = hook
 
+    def _project_into_record(self) -> None:
+        """Plant the threshold-stop projection numbers into
+        `self.current["output"]` so they land in the JSONL audit row.
+
+        Both raw byte counts AND % of source are emitted. The queue
+        runner's adaptive-CRF-jump reader (since 1.15.0) consumes the
+        pct values; downstream analysis / future tooling can use the
+        byte counts. No-op when no projection was captured (the common
+        non-threshold-stop case)."""
+        if self._output_bytes_projected is None:
+            return
+        if not isinstance(self.current, dict):
+            return
+        out = self.current.setdefault("output", {})
+        # Denominator: the encode_src size as recorded under input —
+        # the SAME denominator the encoder's own size-projection guard
+        # used to fire. Using a different denominator (e.g. the user's
+        # original src) would make queue-side jump math disagree with
+        # the encoder's own threshold logic.
+        input_block = self.current.get("input") or {}
+        source_bytes = input_block.get("size_bytes")
+        out["bytes_projected"] = self._output_bytes_projected
+        if self._output_bytes_threshold is not None:
+            out["bytes_threshold"] = self._output_bytes_threshold
+        if isinstance(source_bytes, (int, float)) and source_bytes > 0:
+            out["projected_pct"] = round(
+                self._output_bytes_projected / source_bytes * 100.0, 2)
+            if self._output_bytes_threshold is not None:
+                out["threshold_pct"] = round(
+                    self._output_bytes_threshold / source_bytes * 100.0, 2)
+
     def set_stop_context(self, *,
                          reason: str = "",
                          detail: str = "",
@@ -218,6 +249,7 @@ class HistoryRecorder:
             return
         try:
             self.current.setdefault("timestamp_end_utc", _hist.now_iso_utc())
+            self._project_into_record()
             _hist.append_record(self.current)
             self.written = True
         except Exception as e:

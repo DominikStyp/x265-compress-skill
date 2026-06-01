@@ -441,8 +441,12 @@ Object with `defaults` (recommended — set things once, override per file):
 | `on_chunk_done` | `--on-chunk-done` | argv list (or bare string) run after each chunk — see **Chunk-finished hook** below |
 | `on_queue_item_end` | queue-only | argv list (or bare string) run after each finished job with the full queue snapshot — see **Queue-progress hook** below |
 | `retry_with_bigger_crf` | queue-only | bool, default `false` — auto-retry a size-guard-stopped job at higher CRF (see **Auto-retry on size guard** below) |
-| `crf_step` | queue-only | int, default `1` — how much to raise CRF per retry |
+| `crf_step` | queue-only | int, default `1` — minimum step per retry; also the only step when `crf_jump` is off |
 | `crf_max` | queue-only | int, default `28` — stop escalating past this; emits `stopped-threshold-crf-exhausted` |
+| `crf_jump` | queue-only | bool, default `false` — adaptive CRF-jump escalation (see **Adaptive CRF jump** below). When false, today's `+crf_step` walk is byte-identical |
+| `crf_jump_k` | queue-only | number or `"auto"`, default `6.0` — rate constant in the `size_ratio ≈ 2^(-ΔCRF/K)` model; `"auto"` calibrates per-job from the first two projections |
+| `crf_jump_margin` | queue-only | float, default `5.0` — aim this many % points UNDER `max_size_percent` so the next attempt actually lands below the hard cap |
+| `crf_floor_min_gain` | queue-only | float, default `2.0` — Fix-3 floor detector threshold in % points; `0` disables. With `crf_jump`, two consecutive probes whose projections improve by less than this stop the escalation as `stopped-threshold-crf-exhausted` instead of walking to `crf_max` |
 
 Unknown keys produce a warning and are dropped — gives you a typo safety net.
 
@@ -458,6 +462,60 @@ When the size guard stops a job (`stopped-threshold` — projected output exceed
 ```
 
 Cheap by design: the size guard aborts at ~5% progress, so each *rejected* CRF costs a fraction of an encode — only the final accepted CRF runs to completion. The lossless split is reused across attempts (CRF-independent); superseded encoded chunks are **moved aside** into a `.crf<N>_superseded_<ts>/` subdir of the workdir (never deleted), so no old-CRF video can leak into the retry. Some sources can't shrink at any reasonable quality — hitting `crf_max` and reporting `…-crf-exhausted` is the honest outcome rather than a degraded file.
+
+### Adaptive CRF jump (`crf_jump`)
+
+The blind `+crf_step` walk above is cheap but can still waste 3–4 probe encodes when the configured CRF is far from the size-feasible CRF (an `19 → 20 → 21 → 22 → 23` ladder is common on already-compressed 4K sources). x265's rate control is approximately **exponential in CRF**:
+
+```
+size_ratio ≈ 2^(-ΔCRF / K)
+```
+
+so given the projected `P%` at the just-tried CRF `c` and a target `T%` (= `max_size_percent − crf_jump_margin`), the next feasible CRF can be **computed in one shot**:
+
+```
+next_crf = c + ceil(K · log2(P / T))
+```
+
+Median `K ≈ 6` matches the x265 textbook value AND the bulk of real history. Set `crf_jump: true` (in `defaults` or per job) to switch on:
+
+```json
+{
+  "defaults": {
+    "max_size_percent": 85,
+    "retry_with_bigger_crf": true,
+    "crf_jump": true,
+    "crf_jump_k": 6.0,
+    "crf_jump_margin": 5.0,
+    "crf_floor_min_gain": 2.0,
+    "crf_max": 28
+  },
+  "jobs": [{"input": "*.mp4"}]
+}
+```
+
+Real-history collapse from the spec's data (4K & 1080p mix, `max_size_percent=85`, margin=5 → target=80):
+
+| Source | Before (blind walk) | After (`crf_jump: true`) |
+|---|---|---|
+| Emily Pink (1080p) | `19 → 20 → 21 → 22 → 23` (4 aborts) | `19 → 23` (0 extra aborts) |
+| April Bigass (4K)  | `23 → 24 → 25` (2 aborts)             | `23 → 25` (0 extra aborts) |
+| Pauline Cooper (1080p) | `19 → 20 → 21` (2 aborts)         | `19 → 21` (0 extra aborts) |
+
+`crf_jump_k: "auto"` calibrates K per-job from the job's own first two projections (`K_obs = -ΔCRF / log2(P2/P1)`), clamped to `[4, 9]`. Useful for batches that mix codecs / preset / content where the bulk constant drifts.
+
+**The verifying probe.** The jump is "big step toward feasible", not "guaranteed feasible in one" — near the compression floor the model under-predicts. So one short verify projection at the jumped-to CRF may still land a hair over (e.g. lands at 85.2% with target 80%). A single verify projection beats four blind probes.
+
+**Floor detector (`crf_floor_min_gain`).** Some sources are already at their compression floor (Baby Kxtten 23→…→23 stuck around 85.0–85.5% across CRFs in the spec). With `crf_jump` on, two consecutive probes whose projections improve by less than `crf_floor_min_gain` % points (default 2.0) — while both still over the cap — stop the escalation as `stopped-threshold-crf-exhausted` immediately, instead of walking all the way to `crf_max`. The `on_job_end` hook reports the verdict so a notifier knows "raising `crf_max` won't help this source" (see the `⚠️ SIZE LIMIT (CRF maxed)` push in [`examples/notify_pushbullet.py`](../../examples/notify_pushbullet.py)). Set `crf_floor_min_gain: 0` to disable the detector.
+
+**Cross-restart resume (on-by-default for `retry_with_bigger_crf` jobs — independent of `crf_jump`).** Every threshold-stop persists `(last_crf_tried, last_projected_pct, last_threshold_pct, attempts)` into `<queue_stem>.state.json`'s new `in_progress_escalations` block. A restart resumes at `max(configured_crf, last_crf_tried + step)` — the `23 → 24 → [restart] → 23 → 24 → 25` replay the spec calls out is eliminated. `ok` clears the entry; the state file's schema version stays at `1` (additive forward-compat — an older v1.13.x reader silently ignores the new top-level field). `--reset-state` deletes the sidecar entirely if you want to start fresh — useful when you've lowered `crf` in queue.json mid-batch (the resume always uses the HIGHER of configured / persisted, and the queue prints a one-line NOTE when the configured value was the smaller of the two).
+
+**Defaults preserve back-compat — for the step math.** `crf_jump: false` (the default when omitted) reproduces the v1.13.x `+crf_step` walk byte-identical at the *step-decision* level. Two behaviour deltas v1.13.x → v1.15.0 worth being aware of when upgrading without setting `crf_jump`:
+
+- **Restart resume IS on by default** for any `retry_with_bigger_crf` job (per the spec's "Fix 2 on when `resumable`"). v1.13.x always re-walked from configured CRF; v1.15.0 resumes at `last_crf_tried + step`. Drop the state sidecar (`<queue_stem>.state.json` or `--reset-state`) to restore the v1.13.x replay-from-zero behaviour.
+- **Floor detector IS on by default** with `crf_floor_min_gain: 2.0`. A genuinely floor-bound source (Δ < 2 % points between two consecutive probes, both still over `max_size_percent`) now stops as `stopped-threshold-crf-exhausted` after the second probe instead of walking to `crf_max`. End status is the same; CPU saved. Set `crf_floor_min_gain: 0` to fully disable the detector and match v1.13.x's walk-to-cap behaviour.
+
+Recommended initial config when enabling the jump: `crf_jump: true` + default K=6 + margin=5 — refine to `crf_jump_k: "auto"` only after a batch's pattern is clear.
 
 ### Chunk-finished hook (`on_chunk_done`)
 

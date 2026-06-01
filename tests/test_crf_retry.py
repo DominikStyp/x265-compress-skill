@@ -17,11 +17,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from queue_modules import job_runner  # noqa: E402
-from queue_modules.job_runner import (  # noqa: E402
+from queue_modules.crf_retry import (  # noqa: E402
     CRF_EXHAUSTED_STATUS,
     run_job_with_crf_retry,
-    supersede_encoded_chunks,
 )
+# supersede_encoded_chunks stayed in job_runner — the retry loop calls it
+# via `job_runner.supersede_encoded_chunks` so the monkey-patches below
+# (which set the attribute on `job_runner`) keep working unchanged.
+from queue_modules.job_runner import supersede_encoded_chunks  # noqa: E402
 from queue_modules.job_schema import derive_workdir  # noqa: E402
 from encode_modules.verify import find_missing_enc_chunks  # noqa: E402
 

@@ -40,11 +40,17 @@ VALID_KEYS: set[str] = {
     # Queue-only keys (consumed by the queue runner, NOT forwarded to
     # compress.py argv): auto-escalate CRF when the size guard stops a job;
     # fire the queue-side `on_queue_item_end` notification with the full
-    # `[OK]` / `[FAILED]` / `[..]` snapshot after each finished job.
+    # `[OK]` / `[FAILED]` / `[..]` snapshot after each finished job;
+    # adaptive-CRF-jump escalation (since 1.15.0; opt-in, defaults
+    # preserve today's `+crf_step` behaviour byte-identically).
     "retry_with_bigger_crf",
     "crf_step",
     "crf_max",
     "on_queue_item_end",
+    "crf_jump",
+    "crf_jump_k",
+    "crf_jump_margin",
+    "crf_floor_min_gain",
 }
 
 
