@@ -268,6 +268,73 @@ the encode keeps going.
 
 ---
 
+## Recipe 9 — "Notify me when a source is stopped by the size guard (Pushbullet)"
+
+`on_chunk_done` fires per chunk and only knows chunk-level facts — so it
+**cannot** distinguish "this job hit `max_size_percent` and was stopped"
+from any other terminal status. That information lives on the **`on_job_end`**
+event (added in 1.9.0), which fires once per source with the terminal
+status, the projection banner, and the CRF chain.
+
+Since 1.14.0 the shipped recipe at [`examples/notify_pushbullet.py`](../examples/notify_pushbullet.py)
+dispatches on `X265_HOOK_EVENT` and produces a distinct payload per event,
+so the same script can be wired at every hook you care about:
+
+```json
+{
+  "defaults": {
+    "crf": 22,
+    "parallel": "auto",
+    "resumable": true,
+    "max_size_percent": 85,
+    "retry_with_bigger_crf": true,
+    "crf_max": 26,
+    "on_chunk_done":     ["python3", "/path/to/examples/notify_pushbullet.py"],
+    "on_job_end":        ["python3", "/path/to/examples/notify_pushbullet.py"],
+    "on_file_complete":  ["python3", "/path/to/examples/notify_pushbullet.py"],
+    "on_queue_item_end": ["python3", "/path/to/examples/notify_pushbullet.py"]
+  },
+  "jobs": [{"input": "*.mp4"}]
+}
+```
+
+Push titles by event:
+
+| Event | Status | Example title | Why it stands out |
+|---|---|---|---|
+| `chunk-done` | (per-chunk) | `Chunk-07-Done, 4/10 done (38.2%)` | Real ground-truth progress, parallel-safe |
+| `job-end` | `ok` | `✅ DONE · CRF 21,22 · saved 35%` | Includes the CRF chain so you see escalation |
+| `job-end` | `stopped-threshold` | `⚠️ SIZE LIMIT · CRF 21` | **Not a failure** — own visual class |
+| `job-end` | `stopped-threshold-crf-exhausted` | `⚠️ SIZE LIMIT (CRF maxed) · CRF 28` | Means raising `crf_max` won't help this source |
+| `job-end` | `pre-flight-failed` | `⛔ PRE-FLIGHT FAILED` | Re-rip / re-download the source |
+| `job-end` | other failure | `⛔ <STATUS> · CRF 21` | Real crash; check logs |
+| `file-complete` | (ok only) | `📦 FILE READY · 3/8 · CRF 22 · saved 30%` | Queue-counter context built in |
+| `queue-item-end` | (per finished job) | `Queue [OK] · clip.mp4` | Body is the full queue snapshot |
+
+The size-stop body carries the encoder's `X265_JOB_STOP_DETAIL` line (the
+same `"Estimated output 2659.6 MB (85.0% of source) exceeds threshold
+2659.3 MB (85.0%). Stopped at 89.2% overall progress."` you'd see on
+stdout), so the push tells you the projection without an SSH-in.
+
+**Token handling unchanged**: `PUSHBULLET_TOKEN` (required) and
+`PUSHBULLET_DEVICE` (optional) come from environment variables only —
+never the script, never `queue.json`. A leaked token can be revoked at
+**pushbullet.com → Settings → Access Tokens**.
+
+**`stopped-threshold-crf-exhausted` ↔ [`crf_max`](#per-job-keys-full-schema)**:
+when the `(CRF maxed)` variant fires, the encoder walked up to `crf_max`
+(default 28) without ever fitting under `max_size_percent`. The source
+is already efficiently compressed — raising `crf_max` will keep degrading
+quality without meaningful shrinkage. See `retry_with_bigger_crf` /
+`crf_max` / `crf_step` in the schema table for the escalation knobs.
+
+> **Back-compat**: a missing `X265_HOOK_EVENT` (or any unknown event)
+> falls through to the chunk-done branch — byte-identical to the v1.13.x
+> notifier — so wiring the v1.14.0 script at *only* `on_chunk_done` works
+> exactly like before.
+
+---
+
 ## Per-job keys (full schema)
 
 Any key in this table can appear in `defaults` (applies to all jobs)
@@ -291,6 +358,13 @@ or per-job (overrides the default for that one):
 | `auto_patch_source` | bool | Surgically patch broken h264 GOPs and continue |
 | `max_patch_seconds` | float | Loss budget for auto-patch (default 10) |
 | `on_chunk_done` | argv list / str | Command run after each chunk (success+failure); context via `X265_*` env vars. Best-effort, 30 s timeout — never derails the encode |
+| `on_job_end` | argv list / str | (1.9.0) Command run once per source at the terminal-status chokepoint — fires for **every** status (`ok`, `stopped-threshold[+crf-exhausted]`, `chunk-choked`, `pre-flight-failed`, `verify-failed`, `stopped-by-user`, `failed-*`). Env vars include `X265_JOB_STATUS`, `X265_JOB_STOP_REASON`, `X265_JOB_STOP_DETAIL` (the projection banner), `X265_CRF`, `X265_CRF_RETRY_CHAIN`, `X265_OUTPUT_BYTES_PROJECTED` / `_THRESHOLD`. The right hook for **size-stop notifications** — see Recipe 9 |
+| `on_file_complete` | argv list / str | (1.10.0) Command run once per source on `ok` only (after the final `.mkv` is on disk). Carries per-file env vars **plus** queue-counter env vars (`X265_QUEUE_INDEX` / `_TOTAL` / `_ITEMS_FINISHED` / `_ITEMS_REMAINING` / `_BYTES_*_SO_FAR` / `_PCT_SAVED_SO_FAR`) so notifications can say "3 of 8 done · saved 28% so far". Falls back to `1/1/0/0` defaults in single-file `compress.py` mode so the same script works in both contexts |
+| `on_queue_item_end` | argv list / str | (1.13.0, queue-only) Command run by `run_queue.py` after each finished job (success **or** failure — but not skips). Ships `X265_QUEUE_STATUS_SUMMARY`: a multi-line snapshot of the whole queue marked `[OK]` / `[FAILED]` / `[..]` per job, plus `X265_JOB_MARKER` for the just-finished one. One push delivers a complete "where are we now" picture |
+| `retry_with_bigger_crf` | bool | (1.6.0, queue-only) Auto-escalate CRF on a `stopped-threshold` abort. Re-encodes the same source at `crf + crf_step` until under `max_size_percent` or `crf_max` is hit. Cheap by design — the size guard aborts at ~5% progress, so each rejected CRF costs a fraction of an encode |
+| `crf_step` | int | (queue-only) How much to raise CRF per retry. Default **1**. Increase for faster convergence on stubborn sources (at the cost of overshooting the minimum feasible CRF by a point or two) |
+| `crf_max` | int | (queue-only) Cap on `retry_with_bigger_crf` escalation. Default **28**. When hit, the job ends as `stopped-threshold-crf-exhausted` (a needs-attention status, doesn't stop the queue). The "CRF maxed" tag in Recipe 9's size-limit push means raising this won't help — the source is already efficiently compressed |
+| `done_dir` | path | (1.11.0) Move BOTH source and output into this directory after `status == ok`. `~` expands; relative paths resolve against the queue.json's directory. Cross-volume safe; refuses to overwrite or move into a workdir. State recorded in `<queue_stem>.state.json` so a re-run silently skips with status `skipped-done` |
 
 ---
 

@@ -3,6 +3,57 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.14.0] — 2026-06-01
+
+### Changed
+- **`examples/notify_pushbullet.py` is now a multi-event dispatcher.**
+  The shipped recipe used to know only `chunk-done`, which silently
+  mis-rendered every other event as `"Chunk-00-Done, 0/0 done (0.0%)"`
+  when wired at `on_job_end` / `on_file_complete` / `on_queue_item_end`
+  — so the headline notification ("⚠️ this source was stopped by the
+  size guard at CRF N, projected X% of source") was impossible to get
+  from the bundled script. `build_payload` now branches on
+  `X265_HOOK_EVENT` and produces a distinct payload per event:
+
+  | Event | Title shape |
+  |---|---|
+  | `chunk-done` | `Chunk-07-Done, 4/10 done (38.2%)` (unchanged) |
+  | `job-end` + `ok` | `✅ DONE · CRF 21,22 · saved 35.05%` |
+  | `job-end` + `stopped-threshold` | `⚠️ SIZE LIMIT · CRF 21` (body carries the projection banner) |
+  | `job-end` + `stopped-threshold-crf-exhausted` | `⚠️ SIZE LIMIT (CRF maxed) · CRF 23,24,25,26,27,28` |
+  | `job-end` + `pre-flight-failed` | `⛔ PRE-FLIGHT FAILED` |
+  | `job-end` + any other failure | `⛔ <STATUS> · CRF 21` |
+  | `file-complete` | `📦 FILE READY · 3/8 · CRF 22 · saved 30.50%` |
+  | `queue-item-end` | `Queue [OK] · filename` (body is the full queue snapshot) |
+
+  Back-compat: a missing or unknown `X265_HOOK_EVENT` falls through to
+  the chunk-done branch, byte-identical to v1.13.x — so anyone wiring
+  the script at only `on_chunk_done` sees zero change. Token / device
+  still come from `PUSHBULLET_TOKEN` / `PUSHBULLET_DEVICE` env only and
+  are never printed. Stdlib only.
+
+### Added
+- **`docs/AGENT_QUEUE_RECIPES.md` Recipe 9 — "Notify me when a source
+  is stopped by the size guard (Pushbullet)".** Documents the
+  size-stop notification (the motivating use case) plus the full
+  one-file-per-every-hook wiring. Cross-linked to `retry_with_bigger_crf`
+  / `crf_max` so readers connect the "CRF maxed" tag back to the
+  escalation ceiling.
+- **`docs/AGENT_QUEUE_RECIPES.md` per-job-keys schema table grew the
+  rows it referenced but didn't define:** `on_job_end` (1.9.0),
+  `on_file_complete` (1.10.0), `on_queue_item_end` (1.13.0),
+  `retry_with_bigger_crf` / `crf_step` / `crf_max` (1.6.0+), `done_dir`
+  (1.11.0). Recipe 9's cross-links now resolve.
+
+### Tests
+- 21 new cases on top of the existing 5 in `tests/test_example_notify_pushbullet.py`,
+  covering every event branch (frozen title strings via `assertEqual`,
+  not loose `assertIn`), the empty-CRF-chain degraded path on
+  `job-end`, the missing-event back-compat path, and the
+  `device_iden`-omission contract per event. Two reviewer subagents
+  (PASS + PASS WITH NITS) flagged the missing schema-table rows and
+  the loose title assertions; both addressed in this release.
+
 ## [1.13.0] — 2026-05-31
 
 ### Added
