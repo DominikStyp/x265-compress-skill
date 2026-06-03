@@ -24,8 +24,23 @@ scripts run standalone from any shell.
 - **Choke detection** — per-chunk progress watchdog frees a stuck slot
   without aborting the rest of the file
 - **Quality scoring** — VMAF + PSNR + SSIM after every successful encode
-- **Threshold guard** — abort early if projected output won't save enough
+- **Size-threshold guard** — abort early if projected output won't save enough
   disk space (`--max-size-percent N`)
+- **Visual-quality guard (since v1.17.0)** — abort the file (exit 9 =
+  `stopped-quality-threshold`) and let the queue move on if any chunk's
+  measured VMAF falls below a per-job / global threshold
+  (`visual_quality_threshold: 90` in `queue.json`, or
+  `--visual-quality-threshold 90` on the CLI). Runs `libvmaf` in a
+  background thread parallel with the next chunk's encode, at NORMAL
+  CPU priority so it preempts encoders. First temporal chunk is graced
+  (single-chunk VMAF is noisy); 3 consecutive libvmaf-broken returns
+  fire a loud abort instead of silently disabling the guard.
+- **Idle-priority opt-out (since v1.16.0)** — set
+  `CLAUDE_ENCODING_NO_NICE=1` in the environment to skip the default
+  `nice -n 19` (POSIX) / `IDLE_PRIORITY_CLASS` (Windows) wrap on every
+  ffmpeg child. For dedicated encoder machines with no foreground
+  workload competing for CPU. Lifecycle plumbing (killpg / Job Object
+  KILL_ON_JOB_CLOSE) stays in place regardless.
 - **DTS-collision auto-recovery** — MPEG-TS roundtrip remux clears the
   one verify failure that doesn't actually mean the video is broken
 - **Queue runner** — JSON queue of jobs, sequential, live-reloadable
@@ -216,6 +231,26 @@ Minimal `queue.json`:
 }
 ```
 
+Same `queue.json` with the v1.17.0 per-chunk VMAF guard enabled (file is
+skipped to the next queue item if any chunk's VMAF mean drops below the
+threshold; first temporal chunk is graced):
+
+```json
+{
+  "defaults": {
+    "crf": 22,
+    "parallel": 4,
+    "max_size_percent": 80,
+    "visual_quality_threshold": 90,
+    "auto_patch_source": true
+  },
+  "jobs": [
+    {"input": "file1.mp4"},
+    {"input": "file2.mp4", "crf": 20, "visual_quality_threshold": 92}
+  ]
+}
+```
+
 ## Documentation
 
 - [**SKILL.md**](SKILL.md) — comprehensive reference: every flag, every
@@ -238,7 +273,7 @@ Minimal `queue.json`:
 | `run_queue.py` | Sequential queue runner with mid-flight live-reload |
 | `platform_compat/` | OS abstraction (Win32 ↔ POSIX). Single point where the codebase decides what shell, what priority class, what suspend syscall to use |
 | `compress_modules/` | Source probe, plan composition, `.bat`/`.sh` script writer |
-| `encode_modules/` | Chunk worker, serial + parallel loops, live display, choke detection, VMAF, history, source guard |
+| `encode_modules/` | Chunk worker, serial + parallel loops, live display, choke detection, VMAF (`quality_libvmaf.py` for the libvmaf primitives + `quality_guard.py` for the per-chunk threshold worker), history, source guard |
 | `queue_modules/` | Job schema, queue I/O, per-job runner |
 | `references/` | x265 parameter rationale |
 | `examples/` | Copy-paste hook scripts (e.g. `notify_pushbullet.py` for `on_chunk_done`) |
@@ -252,7 +287,7 @@ else in the codebase changes.
 
 | Concern | Windows backend | POSIX backend (macOS / Linux) |
 |---|---|---|
-| Subprocess priority | `IDLE_PRIORITY_CLASS` creationflag | `nice -n 19` cmd wrapper (thread-safe alt to preexec_fn) |
+| Subprocess priority | `IDLE_PRIORITY_CLASS` creationflag (skipped when `CLAUDE_ENCODING_NO_NICE` is set — v1.16.0+) | `nice -n 19` cmd wrapper (thread-safe alt to preexec_fn; skipped when `CLAUDE_ENCODING_NO_NICE` is set — v1.16.0+) |
 | Suspend / resume | `NtSuspendProcess` / `NtResumeProcess` | `SIGSTOP` / `SIGCONT` |
 | ANSI escape support | `SetConsoleMode` VT processing | Native (no-op) |
 | Kill children with parent | Win32 Job Object (`KILL_ON_JOB_CLOSE`) | Process group + `atexit`/SIGTERM/SIGHUP/SIGQUIT handlers + `getppid` watchdog (covers `kill -9`) |
