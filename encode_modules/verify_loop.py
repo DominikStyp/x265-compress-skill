@@ -83,6 +83,8 @@ def run_encode_verify_loop(src: Path, chunks: list[Path], workdir: Path,
             auto_fix_choke=args.auto_fix_choke,
             segment_seconds=args.segment_seconds,
             chunk_hook=chunk_hook,
+            visual_quality_threshold=getattr(
+                args, "visual_quality_threshold", None),
         )
 
         # Per-chunk choke skips: do NOT merge. Successful chunks stay on

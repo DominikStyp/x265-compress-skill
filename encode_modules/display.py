@@ -150,6 +150,13 @@ class ParallelDisplay:
         # size_projection.check_threshold when the guard fires; surfaces to
         # the on_job_end hook via the recorder's stop context.
         self.last_projection_bytes: int | None = None
+        # Per-chunk VMAF quality-threshold abort (v1.17.0). When the
+        # QualityGuard fires, it stores its QualityAbortInfo here AND sets
+        # abort_event. The orchestrator distinguishes a quality abort from a
+        # size-threshold abort by checking this field first. Typed as Any to
+        # avoid importing quality_guard at display-load time (display is
+        # imported very early; quality_guard pulls in subprocess machinery).
+        self.quality_abort_info: object | None = None
         self.active_procs: dict[int, subprocess.Popen] = {}
 
         # Interactive pause/resume state. paused_slots tracks which slot indices

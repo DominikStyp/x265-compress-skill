@@ -9,6 +9,25 @@ from __future__ import annotations
 import argparse
 
 
+def _vmaf_threshold(raw: str) -> float:
+    """argparse `type=` for `--visual-quality-threshold`. VMAF is bounded
+    [0, 100] in the spec; we accept [1, 100] (a threshold of 0 would never
+    trigger and ``None`` is the correct way to opt out). Values outside the
+    range fail at parse time with a clear message — much better than the
+    silent disable (negative) or false-positive abort on every chunk (>100)
+    that an unconstrained type=float would produce."""
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"visual-quality-threshold must be a number, got {raw!r}")
+    if not 1.0 <= value <= 100.0:
+        raise argparse.ArgumentTypeError(
+            f"visual-quality-threshold must be in [1, 100] (VMAF scale); "
+            f"got {value}. Use no flag at all to disable the guard.")
+    return value
+
+
 def parse_args() -> argparse.Namespace:
     """Build the parser and consume sys.argv. All flag wiring lives here so
     the rest of the encoder doesn't import argparse."""
@@ -52,6 +71,17 @@ def _add_pipeline_args(ap: argparse.ArgumentParser) -> None:
                     help="Path to the JSON sidecar holding the on_chunk_done "
                          "hook command (written by compress.py). Internal "
                          "plumbing — users set --on-chunk-done on compress.py.")
+    ap.add_argument("--visual-quality-threshold", type=_vmaf_threshold,
+                    default=None,
+                    help="Stop encoding the file (exit 9 = "
+                         "stopped-quality-threshold) if any chunk's measured "
+                         "VMAF mean falls below this value. The first chunk "
+                         "in temporal order is graced (single-chunk VMAF is "
+                         "noisier than aggregate). The quality check runs in "
+                         "parallel with the next chunk's encode at NORMAL CPU "
+                         "priority so the abort decision lands quickly. Set "
+                         "via queue.json `visual_quality_threshold` for "
+                         "per-file control.")
     ap.add_argument("--done-dir", default=None,
                     help="If set, after a successful encode move BOTH source "
                          "and output into this directory (must be already "

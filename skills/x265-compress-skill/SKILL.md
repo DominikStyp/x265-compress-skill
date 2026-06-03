@@ -272,6 +272,24 @@ Recovery options after a threshold-stop:
 
 Typical thresholds: `80` means "only useful if I save ≥20 %". `60` is aggressive — many high-quality x264 sources won't make it under that with `--crf 18`.
 
+## Quality-budget guard (`--visual-quality-threshold N`)
+
+The mirror of the size guard, in the QUALITY dimension. Set `--visual-quality-threshold 90` (or `visual_quality_threshold: 90` in `queue.json`) and after each chunk encodes, a background worker measures `libvmaf` on the chunk vs its source. If `vmaf_mean < N`, the encoder:
+
+1. Sets the abort flag + **terminates all in-flight encoder ffmpegs** (no more wasted CPU on a doomed file).
+2. Prints a red bold `ENCODING STOPPED — QUALITY THRESHOLD FAILED!` block with the chunk number + measured VMAF.
+3. Exits **code 9** (`stopped-quality-threshold`) — distinct from code 3 (size guard) and code 1 (real failure).
+4. Leaves already-encoded chunks on disk (never-delete-encoded-chunks rule).
+5. Queue runner: marks the file as ATTENTION (not failure), fires a 📉 `QUALITY FAIL` pushbullet notification with the chunk number + VMAF score, moves to the next queue item.
+
+Threshold value semantics — VMAF mean of the chunk; `90` matches the textbook "visually transparent" line. Range `[1, 100]`; the CLI/CLI parser rejects out-of-range values at parse time.
+
+Warmup grace: the FIRST chunk in temporal order (chunk_idx=0) is measured but not compared to the threshold — single-chunk VMAF is noisier than aggregate, and a chunk-0 false-positive abort would be expensive. From chunk 1 onward every chunk is judged.
+
+The quality check runs in **parallel** with the next chunk's encode (own background thread) and spawns its ffmpeg WITHOUT the low-priority wrap — so on a Scar/normal setup quality preempts the encoder (encoder at idle, quality at normal); on the Mac with `CLAUDE_ENCODING_NO_NICE=1` both run at normal but quality is shorter-running than `slow` x265 anyway.
+
+Infra-failure protection: if libvmaf returns no scores for **3 consecutive chunks** (missing model file, wrong ffmpeg build, etc.), the guard fires a loud abort with `vmaf_mean=NaN` instead of silently disabling. Without this, an unattended overnight queue would silently produce no real quality checks.
+
 ## Three-layer source-corruption defense
 
 Some upstream `.mp4` / `.mkv` files have bitstream corruption in a specific time range (broken NAL units, dropped frames, mis-muxed packets, AAC channel-element mismatches). The decoder silently conceals these errors and passes garbage to x265. With `me=star + merange=57 + subme=4 + bframes=8 + b-adapt=2`, x265 hits a worst-case WPP dependency chain on the concealed frames — symptom is one ffmpeg burning ~1 core for hours while producing only a few MB of bitstream. The skill defends in three layers:
@@ -443,6 +461,7 @@ Object with `defaults` (recommended — set things once, override per file):
 | `segment_seconds` | `--segment-seconds` | int |
 | `parallel` | `--parallel` | int or `"auto"` — omit to let compress.py auto-pick from source height (4K → 1, 1080p → 4, 720p → 6, lower → 8) |
 | `max_size_percent` | `--max-size-percent` | float |
+| `visual_quality_threshold` | `--visual-quality-threshold` | float (1-100, VMAF scale; chunk-0 graced; aborts file at exit 9 = `stopped-quality-threshold`) |
 | `anime` | `--anime` | bool |
 | `grain` | `--grain` | bool |
 | `eight_bit` | `--eight-bit` | bool |

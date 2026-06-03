@@ -17,7 +17,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from encode_modules import quality  # noqa: E402
+from encode_modules import quality, quality_libvmaf  # noqa: E402
 
 
 class _RaisingStdout:
@@ -55,8 +55,13 @@ class _FakeProc:
 class QualityChildTerminatedOnErrorTest(unittest.TestCase):
     def test_child_is_terminated_when_read_loop_raises(self) -> None:
         fake = _FakeProc()
-        with mock.patch.object(quality, "probe_fps", return_value="30/1"), \
-             mock.patch.object(quality.subprocess, "Popen", return_value=fake):
+        # The primitives moved to quality_libvmaf.py in v1.17.0; patch there.
+        # quality.py still re-exports _quality_check_run, so the call site
+        # itself is unchanged — only the patch targets shift.
+        with mock.patch.object(quality_libvmaf, "probe_fps",
+                              return_value="30/1"), \
+             mock.patch.object(quality_libvmaf.subprocess, "Popen",
+                              return_value=fake):
             result = quality._quality_check_run(
                 Path("src.mkv"), Path("dst.mkv"),
             )

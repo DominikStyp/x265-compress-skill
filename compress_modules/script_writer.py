@@ -204,6 +204,7 @@ def _build_extra_args(*, line_cont: str,
                      source_path: Path,
                      info: SourceInfo,
                      done_dir: str | None = None,
+                     visual_quality_threshold: float | None = None,
                      quote_value=None) -> str:
     """Build the variable trailing-flags block appended to the encoder
     command line. `line_cont` is the shell's line-continuation character
@@ -220,6 +221,9 @@ def _build_extra_args(*, line_cont: str,
     if auto_patch_source:
         extra += f" {line_cont}\n  --auto-patch-source"
         extra += f" {line_cont}\n  --max-patch-seconds {max_patch_seconds}"
+    if visual_quality_threshold is not None:
+        extra += (f" {line_cont}\n  --visual-quality-threshold "
+                  f"{visual_quality_threshold:g}")
     if done_dir:
         # done_dir is a path possibly containing spaces, `&`, etc. The
         # caller injects a quote-helper (`_cmd_set_escape`-via-double-quote
@@ -287,7 +291,8 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
                 on_chunk_done: list[str] | None = None,
                 on_job_end: list[str] | None = None,
                 on_file_complete: list[str] | None = None,
-                done_dir: str | None = None) -> None:
+                done_dir: str | None = None,
+                visual_quality_threshold: float | None = None) -> None:
     """Render the encoder script for the current OS and write it to
     `plan.script_path`. On Windows that's a `.bat`; on POSIX it's a `.sh`.
 
@@ -318,6 +323,7 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
             on_job_end=on_job_end,
             on_file_complete=on_file_complete,
             done_dir=done_dir,
+            visual_quality_threshold=visual_quality_threshold,
         )
     else:
         content = _render_posix_script(
@@ -336,6 +342,7 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
             on_job_end=on_job_end,
             on_file_complete=on_file_complete,
             done_dir=done_dir,
+            visual_quality_threshold=visual_quality_threshold,
         )
 
     out_path = Path(plan.script_path)
@@ -369,7 +376,8 @@ def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
                           auto_patch_source, max_patch_seconds,
                           no_report, no_pause, on_chunk_done=None,
                           on_job_end=None, on_file_complete=None,
-                          done_dir=None) -> str:
+                          done_dir=None,
+                          visual_quality_threshold=None) -> str:
     common = _win_substitutions(info, plan, source_path, no_pause=no_pause)
     if resumable:
         workdir = compress_workdir(tmp_dir, source_path)
@@ -384,6 +392,7 @@ def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
             max_patch_seconds=max_patch_seconds,
             source_path=source_path, info=info,
             done_dir=done_dir,
+            visual_quality_threshold=visual_quality_threshold,
             # cmd.exe parses `--done-dir "C:\path with spaces"`; wrap in dq
             # and double `%` inside. cmd doesn't strip backslashes — Path
             # separators survive.
@@ -429,7 +438,8 @@ def _render_posix_script(info, plan, source_path, skill_dir, tmp_dir,
                         auto_patch_source, max_patch_seconds,
                         no_report, no_pause, on_chunk_done=None,
                         on_job_end=None, on_file_complete=None,
-                        done_dir=None) -> str:
+                        done_dir=None,
+                        visual_quality_threshold=None) -> str:
     common = _posix_substitutions(info, plan, source_path, no_pause=no_pause)
     # Skill-script paths are bash variable values — quote them too.
     resumable_script = _sh_quote(str(skill_dir / "encode_resumable.py"))
@@ -449,6 +459,7 @@ def _render_posix_script(info, plan, source_path, skill_dir, tmp_dir,
             max_patch_seconds=max_patch_seconds,
             source_path=source_path, info=info,
             done_dir=done_dir,
+            visual_quality_threshold=visual_quality_threshold,
             # bash single-quote escape for paths with spaces / `&` / `(` etc.
             quote_value=_sh_quote,
         )

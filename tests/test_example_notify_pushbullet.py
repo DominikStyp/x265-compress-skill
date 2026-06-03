@@ -419,5 +419,39 @@ class NoHardcodedSecretTest(unittest.TestCase):
         self.assertIn("PUSHBULLET_DEVICE", text)
 
 
+class QualityThresholdJobEndTest(unittest.TestCase):
+    """v1.17.0: a `stopped-quality-threshold` job-end gets its own QUALITY
+    FAIL branch with the encoder's stop-detail (chunk# + VMAF score) in
+    the body — distinct from the SIZE LIMIT branch (different remedy)."""
+
+    def setUp(self) -> None:
+        self.mod = _load()
+
+    def test_quality_abort_title_and_body(self) -> None:
+        detail = "chunk 4 (src_0004.mkv) VMAF=84.50 < 90"
+        p = self.mod.build_payload({
+            "X265_HOOK_EVENT": "job-end",
+            "X265_JOB_STATUS": "stopped-quality-threshold",
+            "X265_JOB_STOP_DETAIL": detail,
+            "X265_SOURCE": "/Users/dominik/Movies/anime.mp4",
+            "X265_CRF": "22", "X265_CRF_RETRY_CHAIN": "22",
+        })
+        self.assertEqual(p["title"], "📉 QUALITY FAIL · CRF 22")
+        self.assertEqual(p["body"], f"anime.mp4\n{detail}")
+
+    def test_quality_abort_distinct_from_size_limit(self) -> None:
+        # Defensive: status string must not accidentally hit the SIZE LIMIT
+        # branch — they're different failure modes with different remedies
+        # (size = raise CRF; quality = lower CRF or skip).
+        p = self.mod.build_payload({
+            "X265_HOOK_EVENT": "job-end",
+            "X265_JOB_STATUS": "stopped-quality-threshold",
+            "X265_SOURCE": "/x.mp4",
+            "X265_CRF": "22",
+        })
+        self.assertNotIn("SIZE LIMIT", p["title"])
+        self.assertIn("QUALITY", p["title"])
+
+
 if __name__ == "__main__":
     unittest.main()

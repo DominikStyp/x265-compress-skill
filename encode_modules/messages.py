@@ -107,6 +107,30 @@ def print_threshold_abort_block(workdir: Path, abort_reason: str) -> None:
     print(f"{Y}=================================================={R}")
 
 
+def print_quality_threshold_abort_block(workdir: Path, *,
+                                        chunk_idx: int,
+                                        chunk_name: str,
+                                        vmaf_mean: float,
+                                        threshold: float) -> None:
+    """Red-bold "ENCODING STOPPED — quality threshold failed" box. Shown when
+    a chunk's measured VMAF mean fell below the user's configured
+    ``visual_quality_threshold``. Encoded chunks stay in workdir for inspection
+    (the never-delete-encoded-chunks rule); the queue runner skips this file
+    and moves to the next."""
+    R, X = "\033[31;1m", "\033[0m"
+    print()
+    print(f"{R}=================================================={X}")
+    print(f"{R}  ENCODING STOPPED — QUALITY THRESHOLD FAILED!{X}")
+    print(f"{R}  Chunk {chunk_idx + 1} ({chunk_name}) measured "
+          f"VMAF={vmaf_mean:.2f}, below the configured threshold "
+          f"{threshold:g}.{X}")
+    print(f"{R}  Encoded chunks preserved in {workdir} for inspection.{X}")
+    print(f"{R}  Skipping this file — queue moves to next.{X}")
+    print(f"{R}  To force-encode anyway: re-run without "
+          f"--visual-quality-threshold.{X}")
+    print(f"{R}=================================================={X}")
+
+
 def print_finish_stopped_block(workdir: Path, remaining: int,
                                total: int) -> None:
     """Yellow-bold box shown when the user asked to finish after the current

@@ -34,6 +34,7 @@ _EXIT_STATUS: dict[int, str] = {
     6: "pre-flight-failed",
     7: "awaiting-chunk-fix",
     8: "stopped-by-user",      # graceful 'finish after current chunk' stop
+    9: "stopped-quality-threshold",  # v1.17.0 — per-chunk VMAF guard fired
 }
 
 # retry_with_bigger_crf defaults (see job_schema.VALID_KEYS). A higher CRF

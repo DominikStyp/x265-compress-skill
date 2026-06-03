@@ -68,6 +68,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                     help="With --resumable, abort the encode if projected output "
                          "exceeds this percentage of source size. Projection "
                          "starts at >=5%% overall progress.")
+    ap.add_argument("--visual-quality-threshold", type=float, default=None,
+                    help="With --resumable, stop the file (exit 9) and have "
+                         "the queue runner skip it if any chunk's VMAF mean "
+                         "falls below this value (0-100; 90 = visually "
+                         "transparent). First chunk in temporal order is "
+                         "graced. Quality check runs alongside encoding at "
+                         "NORMAL CPU priority.")
     ap.add_argument("--auto-fix-choke", action="store_true",
                     help="With --resumable, if a chunk chokes mid-encode, retry "
                          "it once with relaxed x265 params (me=umh, subme=3, "
@@ -280,6 +287,7 @@ def main() -> int:
         on_job_end=job_end_command,
         on_file_complete=file_complete_command,
         done_dir=done_dir,
+        visual_quality_threshold=args.visual_quality_threshold,
     )
 
     print(json.dumps({
@@ -303,6 +311,7 @@ def main() -> int:
         "segment_seconds_effective": segment_seconds,
         "max_size_percent": args.max_size_percent,
         "max_output_bytes": max_output_bytes,
+        "visual_quality_threshold": args.visual_quality_threshold,
         "on_chunk_done": hook_command,
         "on_job_end": job_end_command,
         "on_file_complete": file_complete_command,

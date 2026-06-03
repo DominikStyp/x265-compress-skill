@@ -203,6 +203,7 @@ def _write_aggregate_reports(skill_dir: Path, queue_path: Path,
 _CLEAN_STATUSES = {"ok", "skipped-exists", "skipped-done"}
 _ATTENTION_STATUSES = {
     "stopped-threshold", "stopped-threshold-crf-exhausted",
+    "stopped-quality-threshold",  # v1.17.0 — per-chunk VMAF guard fired
     "awaiting-chunk-fix", "skipped-not-found",
     "pre-flight-failed", "chunk-choked", "stopped-by-user",
 }

@@ -3,6 +3,85 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.17.0] — 2026-06-03
+
+### Added
+- **Per-chunk VMAF quality guard (`visual_quality_threshold`).** New queue
+  setting (`defaults` or per-file) and CLI flag
+  `--visual-quality-threshold N` (1–100; e.g. 90 = visually transparent).
+  After each chunk's `enc_*.part.mkv` rename to `enc_*.mkv`, a background
+  worker runs `libvmaf` on the chunk vs its source. If `vmaf_mean` falls
+  below the threshold the encoder aborts the file (exit code 9 =
+  `stopped-quality-threshold`), terminates in-flight ffmpegs, prints a red
+  banner with the chunk number + measured score, fires the on-job-end /
+  on-queue-item-end hooks with a dedicated `📉 QUALITY FAIL` pushbullet
+  notification class, and the queue runner skips to the next file.
+
+  Design choices:
+  - **Warmup grace on chunk 0** (configurable). Single-chunk VMAF is
+    noisier than aggregate — the first temporal chunk is measured but not
+    compared, so first-encode noise doesn't false-positive abort.
+  - **Parallel with encoding.** The guard runs in its own background
+    thread; chunk encoding continues to fill the workdir while VMAF
+    drains the queue. The guard spawns its ffmpeg WITHOUT the
+    `nice -n 19` / `IDLE_PRIORITY_CLASS` wrap so the quality check
+    preempts encoders — abort decisions land before the encoder wastes
+    more CPU.
+  - **In-flight termination on abort.** Mirrors the size-threshold
+    guard: when the abort fires, all live encoder ffmpegs are
+    `terminate()`ed under `display.lock`. Without this, with `parallel: 4`
+    on a slow 4K encode we'd let up to four 5–10-minute chunks finish
+    naturally after the guard already knew the file was doomed.
+  - **Encoded chunks preserved** in workdir on abort (never-delete-encoded-
+    chunks rule). Forensic inspection always possible.
+  - **Loud infra-failure abort.** If libvmaf returns no scores for **3
+    consecutive chunks** the guard fires a loud abort with NaN vmaf_mean
+    instead of silently disabling — protects against missing-model-file
+    / broken-ffmpeg infrastructure failures that would otherwise let an
+    encode complete with no real quality check.
+  - **Range validation** on the CLI flag: `1 <= N <= 100`; out-of-range
+    fails at parse time with an actionable message instead of producing
+    a never-fires (negative) or every-chunk-fails (>100) silent failure
+    mode.
+  - **Queue status classification.** `stopped-quality-threshold` is
+    treated as an ATTENTION status by `run_queue._aggregate_exit_code`
+    (queue keeps going, exit-code wrapper sees "needs human review"
+    not "the queue failed") and is counted as a STOPPED job by
+    `queue_counters` so the on_queue_item_end hook sees the right
+    totals.
+
+  Example (queue.json):
+  ```json
+  {
+    "defaults": {"visual_quality_threshold": 90},
+    "jobs": [
+      {"input": "movie.mp4", "crf": 22, "preset": "slow"},
+      {"input": "anime.mp4", "crf": 23, "anime": true,
+       "visual_quality_threshold": 92}
+    ]
+  }
+  ```
+
+### Changed
+- `encode_modules/quality.py` split: low-level libvmaf primitives
+  (`_libvmaf_node_for`, `_build_libvmaf_cmd`, `_parse_vmaf_log`,
+  `_quality_check_run`, `vmaf_pair`) extracted into a new
+  `encode_modules/quality_libvmaf.py` so `quality.py` (which gained the
+  per-chunk-aggregation layer over time) stays under the 500-line cap.
+  All names are re-exported from `quality.py` for back-compat.
+- `_quality_check_run` gained a `low_priority: bool = True` kwarg. New
+  public `vmaf_pair(src, dst)` passes `low_priority=False` so the
+  per-chunk quality guard runs ffmpeg at NORMAL CPU priority. Lifecycle
+  plumbing (POSIX `start_new_session=True` for `killpg`) is preserved
+  regardless of the priority bypass.
+- `encode_modules/encoder.py` dispatcher now routes to the parallel path
+  whenever `visual_quality_threshold` is set — the QualityGuard lives in
+  the parallel module.
+- `examples/notify_pushbullet.py` adds a dedicated `📉 QUALITY FAIL`
+  branch in `_build_job_end` so quality aborts are visually distinct from
+  the existing `⚠️ SIZE LIMIT` branch (different remedies — size = raise
+  CRF; quality = lower CRF or skip).
+
 ## [1.16.0] — 2026-06-03
 
 ### Added

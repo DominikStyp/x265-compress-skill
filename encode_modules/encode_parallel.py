@@ -27,9 +27,12 @@ from .messages import (
     print_choke_guard_announcement,
     print_encode_plan,
     print_finish_stopped_block,
+    print_quality_threshold_abort_block,
     print_runtime_protections,
     print_threshold_abort_block,
 )
+from .quality_guard import QualityAbortInfo, QualityGuard
+from .quality_libvmaf import vmaf_pair
 from .skipped_collector import collect_skipped
 
 
@@ -50,6 +53,9 @@ class _WorkerContext:
     auto_fix_choke: bool
     chunk_hook: ChunkHook | None = None
     position_of: dict[Path, int] = field(default_factory=dict)
+    # Per-chunk VMAF guard (v1.17.0). Built unconditionally; threshold=None
+    # makes submit() a cheap no-op so the wiring stays uniform.
+    quality_guard: QualityGuard | None = None
 
 
 def _worker(slot: int, ctx: _WorkerContext) -> None:
@@ -89,10 +95,16 @@ def _attempt_chunk(slot: int, chunk: Path, ctx: _WorkerContext) -> None:
 
         if (rc != 0 and chunk_was_choked and ctx.auto_fix_choke
                 and _try_autofix(slot, chunk_path, ctx, elapsed)):
+            _submit_quality_check(ctx, chunk_path)
             return
 
         with ctx.results_lock:
             ctx.results.append(r)
+        if rc == 0:
+            # Submit to the per-chunk quality guard (no-op when threshold
+            # is unset). Done OUTSIDE the results_lock so the guard's
+            # background queue doesn't serialize result accumulation.
+            _submit_quality_check(ctx, chunk_path)
     except Exception as ex:
         _record_worker_exception(slot, chunk, ctx, ex)
     finally:
@@ -103,6 +115,24 @@ def _attempt_chunk(slot: int, chunk: Path, ctx: _WorkerContext) -> None:
         fire_for_chunk(ctx.chunk_hook, chunk=chunk, workdir=ctx.workdir,
                        position_of=ctx.position_of, elapsed=elapsed,
                        log=display.events.put)
+
+
+def _submit_quality_check(ctx: _WorkerContext, chunk_path: Path) -> None:
+    """Hand a freshly-finalized chunk to the QualityGuard. The encoded chunk
+    lives at ``workdir/enc_<stem>.mkv``; the source it was encoded from is
+    ``workdir/<chunk.name>``. chunk_idx is the 0-based position in temporal
+    order (NOT encode order) — position_of is 1-based, so subtract 1. The
+    warmup grace inside QualityGuard uses chunk_idx==0 to spare the first
+    temporal chunk from threshold comparison."""
+    if ctx.quality_guard is None:
+        return
+    enc_path = ctx.workdir / f"enc_{chunk_path.stem}.mkv"
+    chunk_idx_0_based = ctx.position_of.get(chunk_path, 1) - 1
+    ctx.quality_guard.submit(
+        chunk_idx=chunk_idx_0_based,
+        src=chunk_path,
+        dst=enc_path,
+    )
 
 
 def _try_autofix(slot: int, chunk_path: Path, ctx: _WorkerContext,
@@ -206,7 +236,9 @@ def encode_chunks_parallel(chunks: list[Path], workdir: Path, *,
                           choke_grace_seconds: float = 300.0,
                           auto_fix_choke: bool = False,
                           segment_seconds: int = 60,
-                          chunk_hook: ChunkHook | None = None) -> list[dict]:
+                          chunk_hook: ChunkHook | None = None,
+                          visual_quality_threshold: float | None = None
+                          ) -> list[dict]:
     """N concurrent ffmpegs encoding median-first chunks, with live render,
     threshold guard, choke detector, htop-style pause/resume. Returns the
     list of chunks that didn't produce a clean enc_*.mkv (empty = success).
@@ -249,6 +281,47 @@ def encode_chunks_parallel(chunks: list[Path], workdir: Path, *,
     for c in todo:
         work_q.put(c)
 
+    # Build the QualityGuard unconditionally. Threshold=None disables the
+    # worker thread + makes submit() a no-op, so per-chunk wiring doesn't
+    # need an `if` at every call site.
+    def _on_quality_abort(info: QualityAbortInfo) -> None:
+        # Set the abort flag FIRST so workers stop spawning new ffmpegs as
+        # they finish their current chunk; the orchestrator post-join check
+        # then routes to the quality branch (which has precedence over the
+        # size-threshold branch in the post-loop check).
+        display.quality_abort_info = info
+        display.events.put(
+            f"  ! quality threshold failed: chunk "
+            f"{info.chunk_idx + 1} ({info.chunk_name}) "
+            f"VMAF={info.vmaf_mean:.2f} < {info.threshold:g}")
+        display.abort_event.set()
+        # Terminate every in-flight encoder ffmpeg — mirror size_projection.
+        # check_threshold's terminate sweep. Without this, with parallel=4 on
+        # a slow 4K encode we'd let up to four 5–10-minute chunks finish
+        # naturally after the abort decision, defeating the whole point of
+        # the guard ("abort decisions land before the encoder wastes more
+        # CPU"). Guard each terminate so a Windows handle race on one proc
+        # doesn't skip the others.
+        with display.lock:
+            procs = list(display.active_procs.values())
+        for proc in procs:
+            try:
+                proc.terminate()
+            except Exception:  # noqa: BLE001 — guard seam, must not raise
+                pass
+        display.input_event.set()  # wake render loop for instant feedback
+
+    quality_guard = QualityGuard(
+        threshold=visual_quality_threshold,
+        skip_first_chunk=True,
+        vmaf_pair_fn=vmaf_pair,
+        events_queue=display.events,
+        on_abort=_on_quality_abort,
+    )
+    if visual_quality_threshold is not None:
+        print(f"      Quality guard: stop file if any chunk's VMAF mean < "
+              f"{visual_quality_threshold:g} (first chunk graced)")
+
     ctx = _WorkerContext(
         display=display, work_q=work_q,
         results=[], results_lock=threading.Lock(),
@@ -259,6 +332,7 @@ def encode_chunks_parallel(chunks: list[Path], workdir: Path, *,
         auto_fix_choke=auto_fix_choke,
         chunk_hook=chunk_hook,
         position_of=pos_of,
+        quality_guard=quality_guard,
     )
 
     stop_render = threading.Event()
@@ -298,12 +372,43 @@ def encode_chunks_parallel(chunks: list[Path], workdir: Path, *,
     render_thread.join(timeout=2)
     stop_keys.set()
     key_thread.join(timeout=1)
+    # Drain any pending quality checks BEFORE the post-loop branching. If a
+    # check was already in-flight on the last chunk it may still flip the
+    # abort flag — wait for it so the quality branch wins over a clean exit.
+    quality_guard.stop(timeout=90)
 
     skipped = collect_skipped(
         chunks, workdir, display,
         x265_params=x265_params, preset=preset, crf=crf, pix_fmt=pix_fmt,
         segment_seconds=segment_seconds,
     )
+
+    # Quality-threshold abort: take precedence over size-threshold so that
+    # if BOTH guards fire near-simultaneously (size guard at chunk N, quality
+    # guard at chunk N+1) we report the quality failure — it's the user-
+    # actionable signal (size abort is "good source, raise CRF"; quality
+    # abort is "source is uncompressible at this quality, skip").
+    if display.quality_abort_info is not None:
+        info: QualityAbortInfo = display.quality_abort_info  # type: ignore[assignment]
+        reason = (f"chunk {info.chunk_idx + 1} ({info.chunk_name}) "
+                  f"VMAF={info.vmaf_mean:.2f} < {info.threshold:g}")
+        mark_status("stopped-quality-threshold",
+                    chunk_idx=info.chunk_idx,
+                    chunk_name=info.chunk_name,
+                    vmaf_mean=info.vmaf_mean,
+                    threshold=info.threshold)
+        set_stop_context(
+            reason="stopped-quality-threshold",
+            detail=reason,
+        )
+        print_quality_threshold_abort_block(
+            workdir,
+            chunk_idx=info.chunk_idx,
+            chunk_name=info.chunk_name,
+            vmaf_mean=info.vmaf_mean,
+            threshold=info.threshold,
+        )
+        sys.exit(9)
 
     if display.abort_event.is_set():
         # Mark the in-progress history record as threshold-aborted before

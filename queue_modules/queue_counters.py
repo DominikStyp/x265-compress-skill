@@ -39,6 +39,7 @@ _FINISHED_STATUSES = {"ok", "skipped-done"}
 _FAILED_STATUSES_PREFIXES = ("failed",)  # "failed-gen" / "failed-exit-N" / ...
 _STOPPED_STATUSES = {
     "stopped-threshold", "stopped-threshold-crf-exhausted",
+    "stopped-quality-threshold",  # v1.17.0 — per-chunk VMAF guard fired
     "chunk-choked", "awaiting-chunk-fix", "stopped-by-user",
     "pre-flight-failed",
 }

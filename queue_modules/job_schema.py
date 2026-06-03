@@ -25,6 +25,7 @@ VALID_KEYS: set[str] = {
     "segment_seconds",
     "parallel",
     "max_size_percent",
+    "visual_quality_threshold",
     "anime",
     "grain",
     "eight_bit",
@@ -90,6 +91,9 @@ def build_compress_argv(job: dict) -> list[str]:
             argv += ["--parallel", str(int(v))]
     if "max_size_percent" in job:
         argv += ["--max-size-percent", str(float(job["max_size_percent"]))]
+    if "visual_quality_threshold" in job:
+        argv += ["--visual-quality-threshold",
+                 str(float(job["visual_quality_threshold"]))]
     if job.get("anime"):
         argv += ["--anime"]
     if job.get("grain"):

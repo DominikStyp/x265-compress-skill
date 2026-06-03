@@ -150,6 +150,13 @@ def _build_job_end(env: Mapping[str, str]) -> tuple[str, str]:
         tag = ("SIZE LIMIT (CRF maxed)"
                if status.endswith("crf-exhausted") else "SIZE LIMIT")
         title = f"⚠️ {tag} · CRF {chain}"
+    elif status == "stopped-quality-threshold":
+        # v1.17.0 — per-chunk VMAF guard fired. Distinct emoji + tag so the
+        # user knows it's a QUALITY problem (raise CRF won't fix it, the
+        # opposite is needed — but per spec the file is just skipped). The
+        # encoder put the chunk number + VMAF score into STOP_DETAIL, which
+        # the body line below already surfaces.
+        title = f"📉 QUALITY FAIL · CRF {chain}"
     elif status == "ok":
         saved = env.get("X265_PCT_SAVED", "")
         suffix = f" · saved {saved}%" if saved else ""

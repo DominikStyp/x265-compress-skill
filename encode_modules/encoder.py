@@ -31,13 +31,20 @@ def encode_chunks(chunks: list[Path], workdir: Path, *, parallel: int,
                  choke_grace_seconds: float = 300.0,
                  auto_fix_choke: bool = False,
                  segment_seconds: int = 60,
-                 chunk_hook: ChunkHook | None = None) -> list[dict]:
+                 chunk_hook: ChunkHook | None = None,
+                 visual_quality_threshold: float | None = None
+                 ) -> list[dict]:
     """Top-level dispatcher — routes to the encoder that owns the guards
     we need. Returns the list of skipped chunks (empty if all chunks
     encoded cleanly). The serial path can't produce skips (no choke
     detection there).
+
+    `visual_quality_threshold`: when set, also forces the parallel path
+    (the QualityGuard lives there). The serial path is for the bare-minimum
+    case with no guards — quality guard is a guard, so it counts.
     """
     needs_parallel_path = (max_output_bytes is not None
+                           or visual_quality_threshold is not None
                            or (choke_threshold_speed > 0
                                and choke_grace_seconds > 0))
     if parallel <= 1 and not needs_parallel_path:
@@ -58,4 +65,5 @@ def encode_chunks(chunks: list[Path], workdir: Path, *, parallel: int,
         auto_fix_choke=auto_fix_choke,
         segment_seconds=segment_seconds,
         chunk_hook=chunk_hook,
+        visual_quality_threshold=visual_quality_threshold,
     )
