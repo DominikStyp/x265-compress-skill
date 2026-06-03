@@ -3,6 +3,40 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.16.0] — 2026-06-03
+
+### Added
+- **`CLAUDE_ENCODING_NO_NICE` env var: opt out of the low-priority wrap.**
+  Setting this to any non-empty value disables the encoder's default
+  "every ffmpeg child runs at idle CPU priority" behaviour, on both
+  backends:
+  - POSIX (`_posix.wrap_cmd_for_low_priority`) skips the `nice -n 19` prefix.
+  - Windows (`_windows.low_priority_popen_kwargs`) drops the
+    `IDLE_PRIORITY_CLASS` creationflag.
+
+  Use on dedicated encoder machines (no foreground workload competing for
+  CPU) where idle priority simply leaves throughput on the table. Empty
+  string and unset both mean "use the default wrap", so a stale
+  `export CLAUDE_ENCODING_NO_NICE=` in a shell rc file does not silently
+  disable it. Any non-empty value opts out — note that `"0"`, `"false"`,
+  `"no"` are all truthy strings in Python and therefore also bypass; if
+  you want the wrap back, `unset` the variable.
+
+  Lifecycle plumbing (POSIX `start_new_session=True` for `killpg`, Windows
+  Job Object kill-on-close) is deliberately unaffected — this knob is
+  priority-only and cleanup guarantees remain intact.
+
+  Example (Mac, dedicated encoder workflow):
+  ```bash
+  export CLAUDE_ENCODING_NO_NICE=1
+  bash run_queue.sh
+  ```
+
+  New shared helper module `platform_compat/_priority_env.py` (consumed by
+  both backends) keeps the rationale in one place; SKILL.md's "CPU
+  priority" section documents the env var instead of the previous
+  "edit the source" workaround.
+
 ## [1.15.0] — 2026-06-01
 
 ### Added

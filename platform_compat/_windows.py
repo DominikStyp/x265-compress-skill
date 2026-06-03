@@ -11,6 +11,8 @@ import subprocess
 import time
 from typing import Optional
 
+from ._priority_env import low_priority_disabled
+
 
 # --- Subprocess priority ----------------------------------------------------
 
@@ -24,7 +26,13 @@ _IDLE_PRIORITY_FLAGS = subprocess.IDLE_PRIORITY_CLASS
 def low_priority_popen_kwargs() -> dict:
     """Subprocess.Popen kwargs that lower the child's CPU priority. Pass
     via ``**low_priority_popen_kwargs()`` so the call site doesn't have to
-    know which kwarg is platform-specific."""
+    know which kwarg is platform-specific.
+
+    Opt-out: setting ``CLAUDE_ENCODING_NO_NICE`` in the environment returns
+    an empty dict — the child spawns at normal priority. Mirrors POSIX
+    behaviour where the env var skips the ``nice -n 19`` wrap."""
+    if low_priority_disabled():
+        return {}
     return {"creationflags": _IDLE_PRIORITY_FLAGS}
 
 

@@ -245,7 +245,16 @@ In practice this means:
 - ffprobe and `progress.py` stay at NORMAL priority because they're sub-second / I/O-bound; touching their priority adds noise to the diff but no behavior change.
 - You'll see `CPU priority: ffmpeg runs at low priority — foreground apps (browser, editor) always preempt encode.` near the start of each encode (both serial and parallel paths).
 
-If for some reason you need ffmpeg back at NORMAL (e.g. dedicated encoding box, nothing else running), edit `wrap_cmd_for_low_priority()` in `platform_compat/_posix.py` to return the cmd unchanged (or `low_priority_popen_kwargs()` on Windows to return `{}`) — those two helpers are the only knobs, and they cover every spawn site.
+If for some reason you need ffmpeg back at NORMAL (e.g. dedicated encoding box, nothing else running), set `CLAUDE_ENCODING_NO_NICE=1` in the environment before launching the encoder / queue runner. The bypass is cross-platform — POSIX skips the `nice -n 19` wrap, Windows drops the `IDLE_PRIORITY_CLASS` creationflag. Lifecycle plumbing (POSIX `start_new_session=True` for `killpg`, Windows Job Object) is deliberately unaffected so cleanup still works.
+
+Example (Mac, dedicated encoder workflow):
+
+```bash
+export CLAUDE_ENCODING_NO_NICE=1
+bash run_queue.sh
+```
+
+Empty string and unset both mean "use default wrap", so a stale `export CLAUDE_ENCODING_NO_NICE=` in a shell rc file won't silently disable it. **Any** non-empty value opts out — note that `"0"`, `"false"`, `"no"` are all truthy strings and therefore also bypass; if you want the wrap back, `unset` the variable.
 
 ## Size-budget guard (`--max-size-percent N`)
 

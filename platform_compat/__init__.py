@@ -20,6 +20,13 @@ Exported names (all backends provide them):
           Win32: {creationflags: IDLE_PRIORITY_CLASS}
           POSIX: {start_new_session: True}  -- new pgid so killpg works.
 
+      Opt-out: setting ``CLAUDE_ENCODING_NO_NICE=1`` in the environment
+      disables priority lowering on BOTH backends (POSIX skips the nice
+      wrap; Windows drops the creationflag). Lifecycle kwargs are
+      unaffected — POSIX still returns start_new_session=True for killpg
+      tracking. Use on dedicated encoder machines with no foreground
+      workload.
+
       Idiomatic spawn:
           subprocess.Popen(
               wrap_cmd_for_low_priority(cmd),

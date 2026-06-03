@@ -29,6 +29,7 @@ import sys
 from typing import Callable, Optional
 
 from ._posix_watchdog import QUIT_SENTINEL, kill_groups
+from ._priority_env import low_priority_disabled
 
 
 # --- Subprocess priority ----------------------------------------------------
@@ -60,7 +61,13 @@ def wrap_cmd_for_low_priority(cmd: list) -> list:
 
     Returns a new list; doesn't mutate the input. If `nice` is somehow
     unavailable, the wrapped command will fail with ENOENT and the caller
-    will see the error — better than silently running at normal priority."""
+    will see the error — better than silently running at normal priority.
+
+    Opt-out: setting ``CLAUDE_ENCODING_NO_NICE`` in the environment skips
+    the wrap entirely (see ``_priority_env`` for the rationale). Still
+    returns a fresh list so the caller can safely mutate either result."""
+    if low_priority_disabled():
+        return list(cmd)
     return ["nice", "-n", "19", *cmd]
 
 
