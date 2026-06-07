@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 
 from encode_modules.chunk_hook import ChunkHook
+from encode_modules.chunk_metrics_log import init_chunk_metrics_log
 from encode_modules.chunking import cleanup, reorder_middle_first, split_source
 from encode_modules.cli_args import parse_args
 from encode_modules.done_dir import (
@@ -46,7 +47,7 @@ from encode_modules.history_state import (
 )
 from encode_modules.job_end_hook import JobEndHook
 from encode_modules.preflight_decision import handle_preflight
-from encode_modules.probes import probe_duration
+from encode_modules.probes import probe_duration, probe_full
 from platform_compat import enable_ansi, enable_utf8_io
 from encode_modules.reporting import (
     measure_quality_and_write_sidecar,
@@ -205,6 +206,46 @@ def main() -> int:
 
     init_history_state(encode_src, dst, args, source_bytes)
 
+    # Per-chunk encode metrics log (v1.18.0). One probe of encode_src for the
+    # static file context (width/height/fps) — history_state.init already does
+    # one for its own input block; we accept the second probe rather than
+    # plumbing a shared SourceInfo through three modules. position_of is the
+    # 1-based temporal index used to derive 0-based chunk_idx in the JSONL.
+    _full = probe_full(encode_src) or {}
+    _video = next((s for s in (_full.get("streams") or [])
+                   if s.get("codec_type") == "video"), {}) or {}
+    _w = _video.get("width")
+    _h = _video.get("height")
+    _fps_str = _video.get("r_frame_rate") or ""
+    _fps_decimal: float | None = None
+    if "/" in _fps_str:
+        try:
+            _n, _d = _fps_str.split("/", 1)
+            _fps_decimal = (float(_n) / float(_d)) if float(_d) else None
+        except (TypeError, ValueError):
+            _fps_decimal = None
+    # Sidecar lives in dst.parent/.tmp alongside .quality.json (NOT inside
+    # `workdir`, which cleanup() wipes after a successful encode). The user
+    # can then inspect per-chunk metrics post-hoc even after the workdir's
+    # source chunks are gone.
+    _metrics_jsonl = dst.parent / ".tmp" / f"{dst.stem}.chunk_metrics.jsonl"
+    # getattr with None fallback so SimpleNamespace-style test stubs that
+    # only set a subset of args don't crash here. Production parse_args
+    # always populates crf/preset.
+    init_chunk_metrics_log(
+        _metrics_jsonl,
+        enabled=(not getattr(args, "no_log_chunk_metrics", False)),
+        position_of={c.name: i for i, c in enumerate(chunks, 1)},
+        width=_w, height=_h, fps=_fps_decimal,
+        crf=getattr(args, "crf", None),
+        preset=getattr(args, "preset", None),
+        quality_threshold=getattr(args, "visual_quality_threshold", None),
+        # workdir let init truncate the JSONL on a fresh encode (phase 1
+        # about to run = no enc_*.mkv chunks yet). Without this the file
+        # accumulates rows across re-encode attempts of the same source.
+        workdir=workdir,
+    )
+
     problems = run_encode_verify_loop(
         encode_src, chunks, workdir, dst,
         args=args, total_dur=total_dur, source_bytes=source_bytes,
@@ -218,6 +259,11 @@ def main() -> int:
 
     quality_scores = measure_quality_and_write_sidecar(
         encode_src, dst, workdir, args=args, n_chunks_total=len(chunks),
+        # v1.18.0 fix: pass the total source duration explicitly so the
+        # .quality.json's `encode.output_bitrate_kbps.overall` field is
+        # populated. quality_scores itself doesn't carry duration, and
+        # without this thread the merge falls back to None.
+        total_duration_s=total_dur,
     )
 
     elapsed = time.monotonic() - run_start

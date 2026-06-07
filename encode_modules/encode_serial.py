@@ -21,6 +21,7 @@ from platform_compat import (
 )
 
 from .chunk_hook import ChunkHook, fire_for_chunk
+from .chunk_metrics_log import record_chunk_metrics
 from .chunking import ffmpeg_chunk_cmd, reorder_middle_first
 from .finish_signal import FINISH_FILENAME, FinishSignal
 from .history_state import mark_status, record_chunk_elapsed
@@ -118,5 +119,17 @@ def encode_chunks_serial(chunks: list[Path], workdir: Path, *,
         # Mirror the parallel encoder's history hook so the JSONL log
         # carries per-chunk wall times regardless of encoder path.
         record_chunk_elapsed(chunk.name, chunk_elapsed)
+        # Same v1.18.0 chunk_metrics_log emission as the parallel path —
+        # the queue-runner aggregator works identically for both encoders.
+        try:
+            out_bytes = out.stat().st_size
+        except OSError:
+            out_bytes = 0
+        record_chunk_metrics(
+            chunk_name=chunk.name,
+            encode_elapsed_s=chunk_elapsed,
+            chunk_duration_s=chunk_dur,
+            output_bytes=out_bytes,
+        )
         fire_for_chunk(chunk_hook, chunk=chunk, workdir=workdir,
                        position_of=pos_of, elapsed=chunk_elapsed, log=print)

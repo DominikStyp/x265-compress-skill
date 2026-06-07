@@ -14,6 +14,11 @@ import sys
 import time
 from pathlib import Path
 
+from .chunk_metrics_log import (
+    aggregate_summary as _aggregate_chunk_metrics,
+    compute_size_percent as _compute_size_percent,
+    get_log as _get_chunk_metrics_log,
+)
 from .quality import (
     quality_check,
     quality_check_chunks,
@@ -24,7 +29,9 @@ from .quality_format import format_quality_summary
 
 def measure_quality_and_write_sidecar(src: Path, dst: Path, workdir: Path, *,
                                      args: argparse.Namespace,
-                                     n_chunks_total: int) -> dict | None:
+                                     n_chunks_total: int,
+                                     total_duration_s: float | None = None
+                                     ) -> dict | None:
     """Run the VMAF/PSNR/SSIM measurement and persist a sidecar JSON under
     `.tmp/<basename>.quality.json` so the queue runner can pull scores into
     its aggregate report. Pure measurement — does NOT trigger a re-encode
@@ -70,6 +77,14 @@ def measure_quality_and_write_sidecar(src: Path, dst: Path, workdir: Path, *,
 
     print(format_quality_summary(quality_scores))
     print(f"    (measured in {q_elapsed:.0f}s, subsample={args.vmaf_subsample})")
+    # v1.18.0: fold the per-chunk encode metrics rollup into the same sidecar
+    # so the queue runner reads both libvmaf scores AND time/size/bitrate
+    # aggregates with one open. The chunk_metrics fold is best-effort: an
+    # aggregation failure (corrupt JSONL, disk read error) must NEVER drop
+    # the libvmaf scores that we DID measure.
+    sidecar_payload = dict(quality_scores)
+    _merge_chunk_metrics_into(sidecar_payload, src=src, dst=dst,
+                              total_duration_s=total_duration_s)
     try:
         sidecar_dir = dst.parent / ".tmp"
         sidecar_dir.mkdir(parents=True, exist_ok=True)
@@ -78,11 +93,74 @@ def measure_quality_and_write_sidecar(src: Path, dst: Path, workdir: Path, *,
         # mid-write must never leave a truncated JSON at the final path
         # (atomic-writes invariant — same temp-then-replace as hook_config).
         tmp = sidecar.with_name(sidecar.name + ".tmp")
-        tmp.write_text(json.dumps(quality_scores, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(sidecar_payload, indent=2), encoding="utf-8")
         os.replace(tmp, sidecar)
     except Exception as e:
         print(f"  (warning: could not write quality sidecar: {e})")
-    return quality_scores
+    return sidecar_payload
+
+
+def _merge_chunk_metrics_into(payload: dict, *, src: Path, dst: Path,
+                              total_duration_s: float | None = None) -> None:
+    """Fold the per-chunk metrics rollup into the in-progress sidecar payload
+    under the ``encode`` key. Best-effort: an aggregation failure (corrupt
+    JSONL, disk read error) is warned about and skipped — the libvmaf
+    scores that were measured stay in the sidecar.
+
+    Two no-op gates so this stays additive and never pollutes legacy paths:
+      1. No log was initialized at all (single-pass compress.py, fixture-
+         stubbed main() in tests).
+      2. The log exists but no chunk rows were written (init-but-no-work
+         e.g. a test that mocks the encode loop). Merging an empty
+         summary would still inject the `encode` key, surprising consumers
+         that exact-equality on the pre-v1.18.0 shape.
+    """
+    log = _get_chunk_metrics_log()
+    if log is None:
+        return
+    try:
+        try:
+            src_bytes = src.stat().st_size if src.exists() else None
+        except OSError:
+            src_bytes = None
+        try:
+            out_bytes = dst.stat().st_size if dst.exists() else None
+        except OSError:
+            out_bytes = None
+        # Duration source priority:
+        # 1. Explicit total_duration_s threaded in from encode_resumable.main
+        #    (the same `total_dur` the encoder used for chunking math).
+        # 2. Fallback: payload's libvmaf-side fields (today neither
+        #    quality_check nor quality_check_chunks populate these, but
+        #    a future quality refactor might).
+        # Without source #1 the `output_bitrate_kbps.overall` field in
+        # the sidecar would always be null even on successful encodes —
+        # caught by reviewer M2 in v1.18.0.
+        duration_s: float | None = None
+        if isinstance(total_duration_s, (int, float)) and total_duration_s > 0:
+            duration_s = float(total_duration_s)
+        else:
+            for key in ("source_duration_s", "duration_s"):
+                v = payload.get(key)
+                if isinstance(v, (int, float)) and v > 0:
+                    duration_s = float(v)
+                    break
+        size_percent = _compute_size_percent(src_bytes, out_bytes)
+        summary = _aggregate_chunk_metrics(
+            source_codec=None,
+            source_bytes=src_bytes,
+            output_bytes=out_bytes,
+            duration_s=duration_s,
+            size_percent=size_percent,
+            quality_aborted=False,
+            quality_aborted_chunk=None,
+        )
+        # Skip merge when no chunks were actually logged — keeps the sidecar
+        # byte-identical to pre-v1.18.0 in init-but-no-encode test paths.
+        if summary.get("encode", {}).get("n_chunks", 0) > 0:
+            payload.update(summary)
+    except Exception as e:
+        print(f"  (warning: chunk_metrics aggregation failed: {e})")
 
 
 def write_single_file_report(src: Path, dst: Path, *,

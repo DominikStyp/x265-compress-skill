@@ -94,6 +94,20 @@ _CONSECUTIVE_INFRA_FAILS_BEFORE_ABORT = 3
 OnAbortFn = Callable[[QualityAbortInfo], None]
 
 
+# Type alias for the chunk-metrics-log merge sink. Called at each decision
+# (ok / warmup-grace / abort / infra-fail) with the verdict so the per-chunk
+# JSONL line carries vmaf_mean + decision alongside time/size/bitrate. The
+# default is a no-op so v1.17.x callers that don't construct with this kwarg
+# still work — see `_NOOP_METRICS_UPDATE` below.
+MetricsUpdateFn = Callable[..., None]
+
+
+def _NOOP_METRICS_UPDATE(**_kwargs) -> None:
+    """Default merge sink: drops every update silently. Real wire-up
+    injects ``chunk_metrics_log.update_chunk_quality``."""
+    return None
+
+
 # Worker queue item: chunk_idx + src path + dst path. Sentinel `None` tells
 # the worker to exit (drained or stop()ped).
 _WorkItem = Optional[tuple[int, Path, Path]]
@@ -111,12 +125,17 @@ class QualityGuard:
                  skip_first_chunk: bool,
                  vmaf_pair_fn: VmafPairFn,
                  events_queue: "queue.Queue[str]",
-                 on_abort: OnAbortFn) -> None:
+                 on_abort: OnAbortFn,
+                 metrics_update_fn: MetricsUpdateFn = _NOOP_METRICS_UPDATE
+                 ) -> None:
         self._threshold = threshold
         self._skip_first_chunk = skip_first_chunk
         self._vmaf_pair_fn = vmaf_pair_fn
         self._events = events_queue
         self._on_abort = on_abort
+        # Optional sink for v1.18.0 per-chunk metrics log merges. The default
+        # is a no-op so existing tests / call sites that omit it keep working.
+        self._metrics_update_fn = metrics_update_fn
         self._aborted = threading.Event()
         self._stopped = threading.Event()
         # Consecutive None returns from vmaf_pair_fn. After
@@ -212,6 +231,12 @@ class QualityGuard:
             self._consecutive_infra_fails += 1
             reason = ("libvmaf returned no scores" if scores is None
                       else "vmaf scores lacked 'vmaf_mean' key")
+            # Mirror the infra-fail verdict into the per-chunk metrics log so
+            # an analyst can see "guard tried; libvmaf failed" rather than a
+            # silent gap. Fires before the loud-abort branch + the
+            # continue-and-warn branch so BOTH paths land in the log.
+            self._emit_metrics_update(
+                chunk_name=src.name, vmaf_mean=None, decision="infra-fail")
             if (self._consecutive_infra_fails
                     >= _CONSECUTIVE_INFRA_FAILS_BEFORE_ABORT):
                 self._events.put(
@@ -240,6 +265,9 @@ class QualityGuard:
         vmaf_mean = scores["vmaf_mean"]
 
         if self._skip_first_chunk and chunk_idx == 0:
+            self._emit_metrics_update(
+                chunk_name=src.name, vmaf_mean=float(vmaf_mean),
+                decision="warmup-grace")
             self._events.put(
                 f"  . quality guard: chunk {chunk_idx + 1} ({src.name}) "
                 f"VMAF={vmaf_mean:.2f} (warmup grace — not compared to "
@@ -247,6 +275,9 @@ class QualityGuard:
             return
 
         if vmaf_mean < self._threshold:
+            self._emit_metrics_update(
+                chunk_name=src.name, vmaf_mean=float(vmaf_mean),
+                decision="abort")
             info = QualityAbortInfo(
                 chunk_idx=chunk_idx,
                 chunk_name=src.name,
@@ -259,6 +290,22 @@ class QualityGuard:
             self._on_abort(info)
             return
 
+        self._emit_metrics_update(
+            chunk_name=src.name, vmaf_mean=float(vmaf_mean), decision="ok")
         self._events.put(
             f"  . quality guard: chunk {chunk_idx + 1} ({src.name}) "
             f"VMAF={vmaf_mean:.2f} >= {self._threshold:g} ok")
+
+    def _emit_metrics_update(self, *, chunk_name: str,
+                             vmaf_mean: Optional[float],
+                             decision: str) -> None:
+        """Forward one decision to the injected metrics sink. Swallows any
+        exception so a buggy sink can never crash the guard worker (which
+        would silently disable the abort detection)."""
+        try:
+            self._metrics_update_fn(
+                chunk_name=chunk_name, vmaf_mean=vmaf_mean, decision=decision)
+        except Exception as ex:  # noqa: BLE001 — sink seam, must not raise
+            self._events.put(
+                f"  ! quality guard: metrics_update_fn raised "
+                f"{type(ex).__name__}: {ex}")

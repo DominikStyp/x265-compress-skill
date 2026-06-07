@@ -32,6 +32,7 @@ from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 
 from .chunking import ffmpeg_chunk_cmd
 from .display import ParallelDisplay
+from .chunk_metrics_log import record_chunk_metrics
 from .history_state import record_chunk_elapsed
 from .probes import probe_duration
 from .verify import decode_walk_chunk
@@ -189,6 +190,21 @@ def try_auto_fix_chunk(chunk: Path, workdir: Path,
         if not display.choked_chunks:
             display.has_choked_chunks.clear()
     record_chunk_elapsed(chunk.name, elapsed)
+    # v1.18.0 fix: also emit the chunk_metrics base row. Without this, the
+    # QualityGuard's later update_chunk_quality falls into the stub branch
+    # (encode_elapsed_s=0, output_bytes=0) and last-wins aggregation
+    # poisons elapsed/bitrate min for any auto-fix run. stat() failure
+    # falls back to 0 the same way chunk_worker / encode_serial do.
+    try:
+        out_bytes = out.stat().st_size
+    except OSError:
+        out_bytes = 0
+    record_chunk_metrics(
+        chunk_name=chunk.name,
+        encode_elapsed_s=elapsed,
+        chunk_duration_s=duration,
+        output_bytes=out_bytes,
+    )
     return True
 
 

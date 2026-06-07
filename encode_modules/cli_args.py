@@ -88,6 +88,15 @@ def _add_pipeline_args(ap: argparse.ArgumentParser) -> None:
                          "resolved to an absolute path by compress.py). Only "
                          "moves on status == ok; refuses to overwrite an "
                          "existing destination or move into the workdir.")
+    ap.add_argument("--no-log-chunk-metrics", action="store_true",
+                    help="Skip writing the per-chunk metrics JSONL "
+                         "(<workdir>.tmp/<stem>.chunk_metrics.jsonl). Default "
+                         "is to log time/size/bitrate per chunk (plus "
+                         "VMAF/decision when the quality guard is on) and "
+                         "fold the rollup into the .quality.json sidecar + "
+                         "encoding_history.jsonl record. Independent of "
+                         "--visual-quality-threshold — metrics log even with "
+                         "the guard disabled.")
 
 
 def _add_quality_args(ap: argparse.ArgumentParser) -> None:

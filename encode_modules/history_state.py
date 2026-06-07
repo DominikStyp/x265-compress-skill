@@ -30,6 +30,9 @@ import threading
 from pathlib import Path
 
 import history as _hist
+from .chunk_metrics_log import (
+    build_summary_for_history_record as _build_chunk_metrics_summary,
+)
 from .file_complete_hook import FileCompleteHook
 from .job_end_hook import JobEndHook
 from .probes import probe_full
@@ -174,9 +177,32 @@ class HistoryRecorder:
             )
             if quality_scores:
                 self.current["quality"] = dict(quality_scores)
+            # NOTE: the chunk_metrics_summary mirror lives in flush() (not
+            # here) so it runs on EVERY terminal status — abort post-mortems
+            # are the spec's headline use case (FEATURE-REQUEST_persist-...
+            # lines 79-80). finalize() only runs on the success path.
         except Exception as e:
             print(f"WARNING: history finalize failed: {e}", file=sys.stderr)
         self.flush()
+
+    def _mirror_chunk_metrics(self) -> None:
+        """Fold the per-chunk metrics log into ``self.current`` under
+        ``chunk_metrics_summary``. Called from ``flush()`` so the rollup
+        lands in the JSONL row for EVERY terminal status — that's the
+        spec's headline use case: post-mortem analysis of an abort.
+
+        Logic lives in ``chunk_metrics_log.build_summary_for_history_record``
+        so all chunk_metrics business lives in one module; this method is
+        just the wiring + the never-raise contract."""
+        if self.current is None:
+            return
+        try:
+            summary = _build_chunk_metrics_summary(self.current)
+            if summary is not None:
+                self.current["chunk_metrics_summary"] = summary
+        except Exception as e:
+            print(f"WARNING: chunk_metrics mirror failed: {e}",
+                  file=sys.stderr)
 
     def attach_job_end_hook(self, hook: JobEndHook | None) -> None:
         """Wire the on_job_end hook so flush() can fire it exactly once with
@@ -250,6 +276,12 @@ class HistoryRecorder:
         try:
             self.current.setdefault("timestamp_end_utc", _hist.now_iso_utc())
             self._project_into_record()
+            # v1.18.0: mirror BEFORE the record is appended so the rollup
+            # lands in the JSONL row for EVERY terminal status (the spec's
+            # headline post-mortem use case). Called here (not from finalize)
+            # because abort paths reach flush via sys.exit + atexit and skip
+            # finalize entirely.
+            self._mirror_chunk_metrics()
             _hist.append_record(self.current)
             self.written = True
         except Exception as e:

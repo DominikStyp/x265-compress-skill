@@ -38,6 +38,9 @@ VALID_KEYS: set[str] = {
     "on_job_end",
     "on_file_complete",
     "done_dir",
+    # v1.18.0: opt-out for per-chunk metrics JSONL. Default true (data is
+    # already computed; persisting is nearly free). Set false to skip.
+    "log_chunk_metrics",
     # Queue-only keys (consumed by the queue runner, NOT forwarded to
     # compress.py argv): auto-escalate CRF when the size guard stops a job;
     # fire the queue-side `on_queue_item_end` notification with the full
@@ -136,6 +139,11 @@ def build_compress_argv(job: dict) -> list[str]:
     # work is preserved). Set "resumable": false in JSON to opt out.
     if job.get("resumable", True):
         argv += ["--resumable"]
+
+    # v1.18.0: chunk metrics log is opt-out. Default true mirrors compress.py's
+    # default; explicit false in the job adds the --no-log-chunk-metrics flag.
+    if job.get("log_chunk_metrics", True) is False:
+        argv += ["--no-log-chunk-metrics"]
 
     return argv
 

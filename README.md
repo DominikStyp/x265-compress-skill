@@ -35,6 +35,19 @@ scripts run standalone from any shell.
   CPU priority so it preempts encoders. First temporal chunk is graced
   (single-chunk VMAF is noisy); 3 consecutive libvmaf-broken returns
   fire a loud abort instead of silently disabling the guard.
+- **Per-chunk metrics log (since v1.18.0)** — persists every chunk's encode
+  time, source duration, output bytes, derived bitrate, plus VMAF +
+  decision (`ok` / `warmup-grace` / `abort` / `infra-fail`) when the
+  quality guard is on. JSONL at `.tmp/<basename>.chunk_metrics.jsonl` (one
+  self-contained line per chunk event, kill-safe per line). A per-file
+  rollup (total/mean/min/max for elapsed + bitrate + vmaf) is folded into
+  the existing `.quality.json` sidecar under `encode` and mirrored into
+  the `encoding_history.jsonl` record as `chunk_metrics_summary`. Default
+  ON (data is already computed); opt out with `--no-log-chunk-metrics`
+  (CLI) or `"log_chunk_metrics": false` (queue). Independent of the
+  quality guard — time/size/bitrate log even with the guard disabled.
+  Lets unattended runs reconstruct exactly how each chunk encoded
+  without terminal scrollback.
 - **Idle-priority opt-out (since v1.16.0)** — set
   `CLAUDE_ENCODING_NO_NICE=1` in the environment to skip the default
   `nice -n 19` (POSIX) / `IDLE_PRIORITY_CLASS` (Windows) wrap on every
@@ -171,6 +184,7 @@ next to your video files:
 | Chunked workdir | `<video_folder>/.tmp/.compress_<name>/` |
 | Pre-flight scan cache | `<source_video>.preflight.json` (next to source) |
 | Quality scores sidecar | `<video_folder>/.tmp/<output>.quality.json` |
+| Per-chunk metrics log (since v1.18.0) | `<video_folder>/.tmp/<output>.chunk_metrics.jsonl` |
 | Per-encode markdown report | `<video_folder>/.tmp/<output>.report.md` |
 | Queue aggregate report | `<queue_folder>/.tmp/<queue_stem>_report.md` |
 | Encoding history JSONL | `<video_folder>/encoding_history.jsonl` |

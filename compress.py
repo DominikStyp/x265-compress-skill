@@ -127,6 +127,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                          "overwrite an existing destination. Only fires on "
                          "status == ok; every other status leaves files in "
                          "place.")
+    ap.add_argument("--no-log-chunk-metrics", action="store_true",
+                    help="With --resumable, skip writing the per-chunk metrics "
+                         "JSONL (.tmp/<stem>.chunk_metrics.jsonl). Default is "
+                         "to log time/size/bitrate per chunk + the per-file "
+                         "encode rollup into the .quality.json sidecar. "
+                         "Independent of --visual-quality-threshold.")
     return ap
 
 
@@ -288,6 +294,7 @@ def main() -> int:
         on_file_complete=file_complete_command,
         done_dir=done_dir,
         visual_quality_threshold=args.visual_quality_threshold,
+        no_log_chunk_metrics=args.no_log_chunk_metrics,
     )
 
     print(json.dumps({
@@ -316,6 +323,7 @@ def main() -> int:
         "on_job_end": job_end_command,
         "on_file_complete": file_complete_command,
         "done_dir": done_dir,
+        "no_log_chunk_metrics": args.no_log_chunk_metrics,
     }, indent=2, ensure_ascii=False))
     return 0
 

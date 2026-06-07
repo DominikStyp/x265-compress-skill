@@ -26,6 +26,7 @@ from .chunking import ffmpeg_chunk_cmd
 # body to dodge a circular dependency. The cycle was resolved in the
 # encoder.py refactor — top-level import is safe and shaves a small import
 # cost off every chunk encode.
+from .chunk_metrics_log import record_chunk_metrics
 from .chunk_recovery import _quarantine_part
 from .display import ParallelDisplay
 from .history_state import record_chunk_elapsed
@@ -122,4 +123,18 @@ def _encode_one_chunk_with_display(slot: int, chunk: Path, workdir: Path,
     # Record this chunk's elapsed wall time into the in-progress history
     # state so the JSONL log captures it.
     record_chunk_elapsed(chunk.name, elapsed)
+    # Emit the per-chunk metrics base row (v1.18.0). No-op when the metrics
+    # log isn't initialized (single-file no-init paths / disabled flag).
+    # stat() can fail under truly degenerate FS state — guard so a perfectly
+    # successful encode is never turned into a failure by an aux-log glitch.
+    try:
+        out_bytes = out.stat().st_size
+    except OSError:
+        out_bytes = 0
+    record_chunk_metrics(
+        chunk_name=chunk.name,
+        encode_elapsed_s=elapsed,
+        chunk_duration_s=duration,
+        output_bytes=out_bytes,
+    )
     return chunk, 0, elapsed, ""

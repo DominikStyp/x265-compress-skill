@@ -28,6 +28,10 @@ from platform_compat import IS_WINDOWS
 
 from . import _bat_templates as bat_t
 from . import _sh_templates as sh_t
+from ._legacy_report_call import (
+    build_legacy_report_call_posix as _build_legacy_report_call_posix,
+    build_legacy_report_call_win as _build_legacy_report_call_win,
+)
 from .plan import compress_workdir, EncodePlan, SCRIPT_EXTENSION
 from .probe import SourceInfo
 
@@ -205,6 +209,7 @@ def _build_extra_args(*, line_cont: str,
                      info: SourceInfo,
                      done_dir: str | None = None,
                      visual_quality_threshold: float | None = None,
+                     no_log_chunk_metrics: bool = False,
                      quote_value=None) -> str:
     """Build the variable trailing-flags block appended to the encoder
     command line. `line_cont` is the shell's line-continuation character
@@ -233,46 +238,15 @@ def _build_extra_args(*, line_cont: str,
         quoted = quote_value(done_dir) if quote_value is not None else (
             f'"{done_dir}"')
         extra += f" {line_cont}\n  --done-dir {quoted}"
+    if no_log_chunk_metrics:
+        extra += f" {line_cont}\n  --no-log-chunk-metrics"
     return extra
 
 
-def _build_legacy_report_call_win(plan: EncodePlan,
-                                  max_size_percent: float | None,
-                                  *, no_report: bool) -> str:
-    """The non-resumable .bat has no Python orchestrator inside it, so we
-    inject a report.py CLI call at the success branch."""
-    if no_report:
-        return ""
-    mx_part = (f" --max-size-percent {max_size_percent:.1f}"
-               if max_size_percent is not None else "")
-    return (
-        'for /f %%S in (\'powershell -NoProfile -Command '
-        '"[int]((Get-Date) - [datetime]\'%_START_ISO%\').TotalSeconds"\') '
-        'do set _ELAPSED=%%S\n'
-        f'python -u "%_SKILL_REPORT%" single "%_SKILL_REPORT_MD%" '
-        f'"%_SKILL_IN%" "%_SKILL_OUT%" --crf {plan.crf} '
-        f'--preset {plan.preset}{mx_part} '
-        f'--elapsed-sec %_ELAPSED% --status ok\n'
-    )
-
-
-def _build_legacy_report_call_posix(plan: EncodePlan,
-                                    max_size_percent: float | None,
-                                    *, no_report: bool) -> str:
-    """POSIX equivalent of the legacy report-call. `date +%s` gives epoch
-    seconds; we diff against the start timestamp captured at the top of
-    the script."""
-    if no_report:
-        return ""
-    mx_part = (f" --max-size-percent {max_size_percent:.1f}"
-               if max_size_percent is not None else "")
-    return (
-        '\n    _ELAPSED=$(( $(date +%s) - _START_TS ))\n'
-        f'    "${{PY}}" -u "${{_SKILL_REPORT}}" single "${{_SKILL_REPORT_MD}}" '
-        f'"${{_SKILL_IN}}" "${{_SKILL_OUT}}" --crf {plan.crf} '
-        f'--preset {plan.preset}{mx_part} '
-        f'--elapsed-sec ${{_ELAPSED}} --status ok'
-    )
+# Legacy single-pass report-call helpers were extracted to
+# ``_legacy_report_call.py`` so this module stays under the 500-line cap. The
+# imports above expose them under the same names the renderers used so the
+# call sites are unchanged.
 
 
 # --- Public API -------------------------------------------------------------
@@ -292,7 +266,8 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
                 on_job_end: list[str] | None = None,
                 on_file_complete: list[str] | None = None,
                 done_dir: str | None = None,
-                visual_quality_threshold: float | None = None) -> None:
+                visual_quality_threshold: float | None = None,
+                no_log_chunk_metrics: bool = False) -> None:
     """Render the encoder script for the current OS and write it to
     `plan.script_path`. On Windows that's a `.bat`; on POSIX it's a `.sh`.
 
@@ -324,6 +299,7 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
             on_file_complete=on_file_complete,
             done_dir=done_dir,
             visual_quality_threshold=visual_quality_threshold,
+            no_log_chunk_metrics=no_log_chunk_metrics,
         )
     else:
         content = _render_posix_script(
@@ -343,6 +319,7 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
             on_file_complete=on_file_complete,
             done_dir=done_dir,
             visual_quality_threshold=visual_quality_threshold,
+            no_log_chunk_metrics=no_log_chunk_metrics,
         )
 
     out_path = Path(plan.script_path)
@@ -377,7 +354,8 @@ def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
                           no_report, no_pause, on_chunk_done=None,
                           on_job_end=None, on_file_complete=None,
                           done_dir=None,
-                          visual_quality_threshold=None) -> str:
+                          visual_quality_threshold=None,
+                          no_log_chunk_metrics=False) -> str:
     common = _win_substitutions(info, plan, source_path, no_pause=no_pause)
     if resumable:
         workdir = compress_workdir(tmp_dir, source_path)
@@ -393,6 +371,7 @@ def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
             source_path=source_path, info=info,
             done_dir=done_dir,
             visual_quality_threshold=visual_quality_threshold,
+            no_log_chunk_metrics=no_log_chunk_metrics,
             # cmd.exe parses `--done-dir "C:\path with spaces"`; wrap in dq
             # and double `%` inside. cmd doesn't strip backslashes — Path
             # separators survive.
@@ -439,7 +418,8 @@ def _render_posix_script(info, plan, source_path, skill_dir, tmp_dir,
                         no_report, no_pause, on_chunk_done=None,
                         on_job_end=None, on_file_complete=None,
                         done_dir=None,
-                        visual_quality_threshold=None) -> str:
+                        visual_quality_threshold=None,
+                        no_log_chunk_metrics=False) -> str:
     common = _posix_substitutions(info, plan, source_path, no_pause=no_pause)
     # Skill-script paths are bash variable values — quote them too.
     resumable_script = _sh_quote(str(skill_dir / "encode_resumable.py"))
@@ -460,6 +440,7 @@ def _render_posix_script(info, plan, source_path, skill_dir, tmp_dir,
             source_path=source_path, info=info,
             done_dir=done_dir,
             visual_quality_threshold=visual_quality_threshold,
+            no_log_chunk_metrics=no_log_chunk_metrics,
             # bash single-quote escape for paths with spaces / `&` / `(` etc.
             quote_value=_sh_quote,
         )

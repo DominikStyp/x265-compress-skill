@@ -290,6 +290,18 @@ The quality check runs in **parallel** with the next chunk's encode (own backgro
 
 Infra-failure protection: if libvmaf returns no scores for **3 consecutive chunks** (missing model file, wrong ffmpeg build, etc.), the guard fires a loud abort with `vmaf_mean=NaN` instead of silently disabling. Without this, an unattended overnight queue would silently produce no real quality checks.
 
+## Per-chunk metrics log (since v1.18.0)
+
+Default-on persistence of every chunk's encode time, source duration, output bytes, derived bitrate, and (when the quality guard is on) VMAF + decision. Solves the v1.17.0 problem of "the per-chunk signal goes to the live terminal and evaporates on any unattended queue run".
+
+Storage:
+
+- `<video_folder>/.tmp/<output>.chunk_metrics.jsonl` — one self-contained JSON line per chunk event. Append-only and kill-safe per line; readers skip torn lines and dedup by `chunk_name` (worker writes a base row at rename; the quality guard appends an update row with `vmaf_mean` + `decision` ∈ {`ok`, `warmup-grace`, `abort`, `infra-fail`}).
+- `<video_folder>/.tmp/<output>.quality.json` gets a new top-level `encode` key with the per-file rollup (total/mean/min/max for elapsed + bitrate + vmaf, plus `quality_threshold` + `quality_aborted`).
+- The `encoding_history.jsonl` row carries the same rollup under `chunk_metrics_summary`.
+
+Opt-out: `--no-log-chunk-metrics` (CLI) or `"log_chunk_metrics": false` in `queue.json` (per-job or `defaults`). Independent of `--visual-quality-threshold` — time / size / bitrate log even when the guard is disabled. Purely additive: a metrics-log failure (disk full, corrupt JSONL) is warned about and never crashes an encode.
+
 ## Three-layer source-corruption defense
 
 Some upstream `.mp4` / `.mkv` files have bitstream corruption in a specific time range (broken NAL units, dropped frames, mis-muxed packets, AAC channel-element mismatches). The decoder silently conceals these errors and passes garbage to x265. With `me=star + merange=57 + subme=4 + bframes=8 + b-adapt=2`, x265 hits a worst-case WPP dependency chain on the concealed frames — symptom is one ffmpeg burning ~1 core for hours while producing only a few MB of bitstream. The skill defends in three layers:
@@ -462,6 +474,7 @@ Object with `defaults` (recommended — set things once, override per file):
 | `parallel` | `--parallel` | int or `"auto"` — omit to let compress.py auto-pick from source height (4K → 1, 1080p → 4, 720p → 6, lower → 8) |
 | `max_size_percent` | `--max-size-percent` | float |
 | `visual_quality_threshold` | `--visual-quality-threshold` | float (1-100, VMAF scale; chunk-0 graced; aborts file at exit 9 = `stopped-quality-threshold`) |
+| `log_chunk_metrics` | `--no-log-chunk-metrics` (opt-out) | bool, **default `true`** — persist per-chunk encode time / bytes / bitrate (+ VMAF when guard on) to `.tmp/<output>.chunk_metrics.jsonl` and fold rollup into `.quality.json` + history JSONL. Set `false` to skip. |
 | `anime` | `--anime` | bool |
 | `grain` | `--grain` | bool |
 | `eight_bit` | `--eight-bit` | bool |

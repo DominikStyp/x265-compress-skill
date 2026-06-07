@@ -3,6 +3,90 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.18.0] — 2026-06-07
+
+### Added
+- **Per-chunk + per-file encode metrics log.** v1.17.0 measured a VMAF
+  per chunk but persisted nothing — the per-chunk signal only made it to
+  the live terminal and was lost on any unattended queue run. v1.18.0
+  writes one self-contained JSON line per finalized chunk to
+  `<video_folder>/.tmp/<output>.chunk_metrics.jsonl`. Every line carries
+  `chunk_idx`, `chunk_name`, `encode_elapsed_s`, `chunk_duration_s`,
+  `output_bytes`, derived `output_bitrate_kbps`, plus the static file
+  context (`width`/`height`/`fps`/`crf`/`preset`) so the row is
+  self-describing. When the v1.17.0 quality guard is on, an update row
+  (last-wins on `chunk_name`) adds `vmaf_mean` + `decision`
+  (`ok` / `warmup-grace` / `abort` / `infra-fail`). Append-only,
+  kill-safe per line; readers skip torn lines and dedup by `chunk_name`.
+
+  A per-file rollup (total/mean/min/max for elapsed + output bitrate +
+  per-chunk VMAF, plus `quality_threshold` + `quality_aborted`) is folded
+  into the existing `.quality.json` sidecar under a new top-level
+  `encode` key, and mirrored into the `encoding_history.jsonl` record as
+  `chunk_metrics_summary`. Two stores let post-mortem tools pivot on
+  whichever fits.
+
+  CLI: `--no-log-chunk-metrics` (opt-out; default ON since the data is
+  already computed). Queue: `"log_chunk_metrics": false` per-job or in
+  `defaults`. **Independent of `visual_quality_threshold`** — time / size /
+  bitrate log even with the guard disabled. Purely additive: no change to
+  abort / skip / exit behaviour; a metrics-log failure (disk full, corrupt
+  JSONL) prints a warning and continues — never crashes an encode.
+
+  Implementation seam mirrors the existing `quality_guard` /
+  `history_state` injection pattern: a `record_chunk_metrics` shim called
+  from `chunk_worker` + `encode_serial` after the `.part` → `.mkv`
+  rename; a `metrics_update_fn` callable injected into `QualityGuard`
+  that fires at each decision site. Both shims are no-ops when no log is
+  initialized, so legacy / test paths (`compress.py` single-pass, fixture-
+  stubbed `main()`) stay byte-identical to v1.17.x.
+
+### Fixed
+- (caught in v1.18.0 reviewer pass) `chunk_metrics_summary` now lands in
+  the `encoding_history.jsonl` row for EVERY terminal status — not just
+  success. The initial wiring called the mirror from `finalize()`, which
+  only runs on the success path; every abort (threshold / quality /
+  chunk-failed / verify-failed / stopped-by-user / pre-flight-failed)
+  reaches `flush()` via `sys.exit` + atexit and skipped finalize. That
+  silently dropped the rollup for exactly the runs the spec was written
+  for (abort post-mortems). Moved to `flush()`.
+- (reviewer-caught) `output_bitrate_kbps.overall` was always `null` in
+  `.quality.json` because `quality_scores` doesn't carry a duration field.
+  `encode_resumable.main()` now threads `total_duration_s` into
+  `measure_quality_and_write_sidecar`, which forwards it to the merge.
+- (reviewer-caught) `chunk_recovery.try_auto_fix_chunk` now emits
+  `record_chunk_metrics` after the successful `.part` -> `.mkv` rename
+  (parallel with the existing `record_chunk_elapsed`). Without this the
+  QualityGuard's later `update_chunk_quality` fell into the stub branch
+  with zero elapsed / bytes, poisoning `elapsed_s.min` and
+  `output_bitrate_kbps.chunk_min` for any auto-fix-choke run.
+- (reviewer-caught) `quality_aborted` / `quality_aborted_chunk` in the
+  summary block are now wired from
+  `mark_status("stopped-quality-threshold", chunk_name=...)` instead of
+  hardcoded `False`/`None`.
+- (reviewer-caught) JSONL now truncates at init when the workdir contains
+  no `enc_*.mkv` chunks (= fresh phase 1), so re-encoding the same source
+  doesn't accumulate rows across attempts (CRF sweep / manual retry).
+- (reviewer-caught) `chunk_idx` is now `null` (was `-1`) when the chunk
+  name isn't in `position_of` — distinguishable from a real index in
+  downstream analytics.
+
+### Changed
+- Extracted `compress_modules/_legacy_report_call.py` so
+  `compress_modules/script_writer.py` stays under the 500-line cap after
+  the chunk-metrics-log plumbing additions. Pure refactor — call sites
+  unchanged.
+- Extracted `encode_modules/chunk_metrics_helpers.py`
+  (`workdir_has_no_enc_chunks`, `compute_size_percent`,
+  `fold_rows_into_encode_block`, stat helpers) so
+  `encode_modules/chunk_metrics_log.py` stays under the 500-line cap and
+  `chunk_metrics`-related logic lives in one namespace. Pure refactor.
+- `aggregate_summary` shim now declares explicit keyword arguments
+  instead of `**kwargs` so a typo at the call site fails at the shim,
+  not deep inside the method.
+- `import sys` in `chunk_metrics_log.py` moved to module top
+  (was lazy-imported inside an error branch).
+
 ## [1.17.0] — 2026-06-03
 
 ### Added

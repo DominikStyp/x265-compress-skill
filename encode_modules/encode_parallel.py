@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .chunk_hook import ChunkHook, fire_for_chunk
+from .chunk_metrics_log import update_chunk_quality
 from .chunk_recovery import try_auto_fix_chunk
 from .chunk_worker import _encode_one_chunk_with_display
 from .chunking import reorder_middle_first, x265_params_with_pools
@@ -317,6 +318,11 @@ def encode_chunks_parallel(chunks: list[Path], workdir: Path, *,
         vmaf_pair_fn=vmaf_pair,
         events_queue=display.events,
         on_abort=_on_quality_abort,
+        # Merge each VMAF decision (ok / warmup-grace / abort / infra-fail)
+        # into the v1.18.0 per-chunk metrics JSONL log. update_chunk_quality
+        # is a module-level shim — no-op if no log was initialized, so the
+        # wiring is harmless for legacy / test paths.
+        metrics_update_fn=update_chunk_quality,
     )
     if visual_quality_threshold is not None:
         print(f"      Quality guard: stop file if any chunk's VMAF mean < "
