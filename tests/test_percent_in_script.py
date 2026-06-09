@@ -53,9 +53,10 @@ def _plan(out_dir: str) -> EncodePlan:
 
 
 def _render(fn, td: str, *, resumable: bool) -> str:
+    # v1.19.0: sidecar_dir = tmp_dir keeps test fixture path lookups intact.
     return fn(
         _info(), _plan(td), Path(f"/src/{SRC_STEM}.mp4"), Path("/skill"),
-        Path(td), Path(td) / f"{OUT_STEM}.report.md",
+        Path(td), Path(td), Path(td) / f"{OUT_STEM}.report.md",
         resumable=resumable, segment_seconds=60, parallel=1,
         max_output_bytes=None, max_size_percent=None, auto_fix_choke=False,
         no_pre_flight_scan=False, auto_patch_source=False,
@@ -113,7 +114,7 @@ class WindowsPercentEscapeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             s = script_writer._render_windows_script(
                 _info(), _plan(td), Path(f"/src/{SRC_STEM}.mp4"), Path("/skill"),
-                Path(td), Path(td) / f"{OUT_STEM}.report.md",
+                Path(td), Path(td), Path(td) / f"{OUT_STEM}.report.md",
                 resumable=True, segment_seconds=60, parallel=1,
                 max_output_bytes=None, max_size_percent=None,
                 auto_fix_choke=False, no_pre_flight_scan=False,

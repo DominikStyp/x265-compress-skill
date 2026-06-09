@@ -23,6 +23,7 @@ import os
 from pathlib import Path
 
 from encode_modules.hook_config import write_hooks_sidecar
+from encode_modules.log_paths import logs_dir, per_encode_report_path
 from formatting import format_hms
 from platform_compat import IS_WINDOWS
 
@@ -279,11 +280,17 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
     output_path_obj = Path(plan.output_path)
     tmp_dir = output_path_obj.parent / ".tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    report_md_path = tmp_dir / f"{output_path_obj.stem}.report.md"
+    # v1.19.0: report + hooks sidecar live under logs/ (not .tmp/). The
+    # chunked workdir stays in .tmp/ — that's mid-flight scratch, wiped
+    # on cleanup; logs are persistent artefacts that survive.
+    sidecar_dir = logs_dir(output_path_obj.parent)
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    report_md_path = per_encode_report_path(output_path_obj)
 
     if IS_WINDOWS:
         content = _render_windows_script(
-            info, plan, source_path, skill_dir, tmp_dir, report_md_path,
+            info, plan, source_path, skill_dir, tmp_dir,
+            sidecar_dir, report_md_path,
             resumable=resumable, segment_seconds=segment_seconds,
             parallel=parallel,
             max_output_bytes=max_output_bytes,
@@ -303,7 +310,8 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
         )
     else:
         content = _render_posix_script(
-            info, plan, source_path, skill_dir, tmp_dir, report_md_path,
+            info, plan, source_path, skill_dir, tmp_dir,
+            sidecar_dir, report_md_path,
             resumable=resumable, segment_seconds=segment_seconds,
             parallel=parallel,
             max_output_bytes=max_output_bytes,
@@ -347,7 +355,8 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
 
 
 def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
-                          report_md_path, *, resumable, segment_seconds,
+                          sidecar_dir, report_md_path, *, resumable,
+                          segment_seconds,
                           parallel, max_output_bytes, max_size_percent,
                           auto_fix_choke, no_pre_flight_scan,
                           auto_patch_source, max_patch_seconds,
@@ -387,7 +396,7 @@ def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
         )
         no_report_flag = " ^\n  --no-report" if no_report else ""
         hooks_setup, hooks_flag = _hook_fragments_win(
-            tmp_dir, source_path.stem, on_chunk_done, on_job_end,
+            sidecar_dir, source_path.stem, on_chunk_done, on_job_end,
             on_file_complete)
         return bat_t.RESUMABLE_BAT_TEMPLATE.format(
             resumable_script=_cmd_set_escape(str(skill_dir / "encode_resumable.py")),
@@ -411,7 +420,8 @@ def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
 
 
 def _render_posix_script(info, plan, source_path, skill_dir, tmp_dir,
-                        report_md_path, *, resumable, segment_seconds,
+                        sidecar_dir, report_md_path, *, resumable,
+                        segment_seconds,
                         parallel, max_output_bytes, max_size_percent,
                         auto_fix_choke, no_pre_flight_scan,
                         auto_patch_source, max_patch_seconds,
@@ -450,7 +460,7 @@ def _render_posix_script(info, plan, source_path, skill_dir, tmp_dir,
         )
         no_report_flag = " \\\n  --no-report" if no_report else ""
         hooks_setup, hooks_flag = _hook_fragments_posix(
-            tmp_dir, source_path.stem, on_chunk_done, on_job_end,
+            sidecar_dir, source_path.stem, on_chunk_done, on_job_end,
             on_file_complete)
         return sh_t.RESUMABLE_SH_TEMPLATE.format(
             resumable_script=resumable_script,

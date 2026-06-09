@@ -40,9 +40,11 @@ def _plan() -> EncodePlan:
 
 
 def _render(fn, *, resumable: bool, no_pause: bool) -> str:
+    # v1.19.0 signature: tmp_dir (chunked-workdir parent) + sidecar_dir
+    # (logs/) + report_md_path are now passed independently.
     return fn(
         _info(), _plan(), Path("/tmp/in.mp4"), Path("/skill"),
-        Path("/tmp/.tmp"), Path("/tmp/.tmp/out.report.md"),
+        Path("/tmp/.tmp"), Path("/tmp/logs"), Path("/tmp/logs/out.report.md"),
         resumable=resumable, segment_seconds=60, parallel=1,
         max_output_bytes=None, max_size_percent=None, auto_fix_choke=False,
         no_pre_flight_scan=False, auto_patch_source=False,
@@ -92,10 +94,14 @@ class ShDepGuardTest(unittest.TestCase):
 
 def _render_hooked(fn, tmp_dir, on_chunk_done):
     """Render the resumable script with a real tmp_dir so the hook sidecar can
-    actually be written, and an explicit on_chunk_done."""
+    actually be written, and an explicit on_chunk_done.
+
+    v1.19.0: sidecar_dir = tmp_dir for tests — keeps the existing fixture's
+    sidecar-lookup paths (``tmp_dir / "in.hooks.json"``) working without
+    spinning up a separate logs/ dir per test."""
     return fn(
         _info(), _plan(), Path("/tmp/in.mp4"), Path("/skill"),
-        Path(tmp_dir), Path(tmp_dir) / "out.report.md",
+        Path(tmp_dir), Path(tmp_dir), Path(tmp_dir) / "out.report.md",
         resumable=True, segment_seconds=60, parallel=2,
         max_output_bytes=None, max_size_percent=None, auto_fix_choke=False,
         no_pre_flight_scan=False, auto_patch_source=False,

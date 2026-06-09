@@ -30,9 +30,12 @@ from queue_modules.queue_state import (  # noqa: E402
 
 
 class StatePathForTest(unittest.TestCase):
-    def test_sidecar_lives_next_to_queue_with_stem(self) -> None:
+    def test_sidecar_lives_in_logs_subdir_with_stem(self) -> None:
+        # v1.19.0: state sidecar moved into <queue_folder>/logs/. Pre-
+        # v1.19.0 sat directly next to the queue file; one-shot migration
+        # in encode_modules.log_paths.migrate_queue_folder relocates it.
         self.assertEqual(state_path_for(Path("/x/queue.json")),
-                         Path("/x/queue.state.json"))
+                         Path("/x/logs/queue.state.json"))
 
 
 class LoadStateTest(unittest.TestCase):
@@ -44,7 +47,8 @@ class LoadStateTest(unittest.TestCase):
 
     def test_load_existing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            sidecar = Path(td) / "queue.state.json"
+            sidecar = Path(td) / "logs" / "queue.state.json"
+            sidecar.parent.mkdir()
             sidecar.write_text(json.dumps({
                 "schema_version": 1,
                 "queue_file": "queue.json",
@@ -111,7 +115,9 @@ class AddAndSaveTest(unittest.TestCase):
             state = QueueState()
             state.add_completed(input_original=Path("/v/x.mp4"))
             state.save_atomically(queue)
-            leftovers = [p.name for p in Path(td).iterdir()
+            # v1.19.0: sidecar lives at logs/queue.state.json. The temp
+            # file used during the atomic write must NOT survive.
+            leftovers = [p.name for p in (Path(td) / "logs").iterdir()
                          if p.name != "queue.state.json"]
             self.assertEqual(leftovers, [])
 

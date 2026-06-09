@@ -178,16 +178,25 @@ the commit SHA so a bug report can identify which build you're running.
 The plugin directory holds **only the code** — your encoding data lives
 next to your video files:
 
+**Since v1.19.0** every log / sidecar artefact lives under a `logs/`
+subdirectory at the appropriate level (video folder, queue folder, or
+history root). The encoder + queue runner each do a one-shot automatic
+migration of any pre-v1.19.0 files to the new locations the first time
+they start in a folder.
+
 | Data | Location |
 |---|---|
 | Encoder script (`.bat` / `.sh`) | `<video_folder>/.tmp/compress_<name>.bat` |
 | Chunked workdir | `<video_folder>/.tmp/.compress_<name>/` |
-| Pre-flight scan cache | `<source_video>.preflight.json` (next to source — removed on successful encode since v1.18.1; kept across aborts so retries skip the scan) |
-| Quality scores sidecar | `<video_folder>/.tmp/<output>.quality.json` |
-| Per-chunk metrics log (since v1.18.0) | `<video_folder>/.tmp/<output>.chunk_metrics.jsonl` |
-| Per-encode markdown report | `<video_folder>/.tmp/<output>.report.md` |
-| Queue aggregate report | `<queue_folder>/.tmp/<queue_stem>_report.md` |
-| Encoding history JSONL | `<video_folder>/encoding_history.jsonl` |
+| Pre-flight scan cache | `<video_folder>/logs/<source>.preflight.json` (removed on successful encode since v1.18.1; kept across aborts so retries skip the scan) |
+| Quality scores sidecar | `<video_folder>/logs/<output>.quality.json` |
+| Per-chunk metrics log (since v1.18.0) | `<video_folder>/logs/<output>.chunk_metrics.jsonl` |
+| Per-encode markdown report | `<video_folder>/logs/<output>.report.md` |
+| Hooks sidecar | `<video_folder>/logs/<source>.hooks.json` (deleted on success) |
+| Queue aggregate report | `<queue_folder>/logs/<queue_stem>_report.md` |
+| Queue state sidecar | `<queue_folder>/logs/<queue_stem>.state.json` |
+| Queue `--json-status` NDJSON (default) | `<queue_folder>/logs/<queue_stem>.json-status.ndjson` (when `--json-status ""` enables the default; explicit `--json-status PATH` is honoured verbatim) |
+| Encoding history JSONL | `<history_root>/logs/encoding_history.jsonl` (override with `CLAUDE_ENCODING_HISTORY_PATH` env var) |
 
 `rm -rf ~/.claude/plugins/x265-compress-skill/` (or `.../skills/...` if
 installed there) removes ONLY the code — your sidecars, reports, history,

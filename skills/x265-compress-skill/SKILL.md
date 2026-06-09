@@ -296,8 +296,8 @@ Default-on persistence of every chunk's encode time, source duration, output byt
 
 Storage:
 
-- `<video_folder>/.tmp/<output>.chunk_metrics.jsonl` — one self-contained JSON line per chunk event. Append-only and kill-safe per line; readers skip torn lines and dedup by `chunk_name` (worker writes a base row at rename; the quality guard appends an update row with `vmaf_mean` + `decision` ∈ {`ok`, `warmup-grace`, `abort`, `infra-fail`}).
-- `<video_folder>/.tmp/<output>.quality.json` gets a new top-level `encode` key with the per-file rollup (total/mean/min/max for elapsed + bitrate + vmaf, plus `quality_threshold` + `quality_aborted`).
+- `<video_folder>/logs/<output>.chunk_metrics.jsonl` — one self-contained JSON line per chunk event. Append-only and kill-safe per line; readers skip torn lines and dedup by `chunk_name` (worker writes a base row at rename; the quality guard appends an update row with `vmaf_mean` + `decision` ∈ {`ok`, `warmup-grace`, `abort`, `infra-fail`}).
+- `<video_folder>/logs/<output>.quality.json` gets a new top-level `encode` key with the per-file rollup (total/mean/min/max for elapsed + bitrate + vmaf, plus `quality_threshold` + `quality_aborted`).
 - The `encoding_history.jsonl` row carries the same rollup under `chunk_metrics_summary`.
 
 Opt-out: `--no-log-chunk-metrics` (CLI) or `"log_chunk_metrics": false` in `queue.json` (per-job or `defaults`). Independent of `--visual-quality-threshold` — time / size / bitrate log even when the guard is disabled. Purely additive: a metrics-log failure (disk full, corrupt JSONL) is warned about and never crashes an encode.
@@ -474,7 +474,7 @@ Object with `defaults` (recommended — set things once, override per file):
 | `parallel` | `--parallel` | int or `"auto"` — omit to let compress.py auto-pick from source height (4K → 1, 1080p → 4, 720p → 6, lower → 8) |
 | `max_size_percent` | `--max-size-percent` | float |
 | `visual_quality_threshold` | `--visual-quality-threshold` | float (1-100, VMAF scale; chunk-0 graced; aborts file at exit 9 = `stopped-quality-threshold`) |
-| `log_chunk_metrics` | `--no-log-chunk-metrics` (opt-out) | bool, **default `true`** — persist per-chunk encode time / bytes / bitrate (+ VMAF when guard on) to `.tmp/<output>.chunk_metrics.jsonl` and fold rollup into `.quality.json` + history JSONL. Set `false` to skip. |
+| `log_chunk_metrics` | `--no-log-chunk-metrics` (opt-out) | bool, **default `true`** — persist per-chunk encode time / bytes / bitrate (+ VMAF when guard on) to `logs/<output>.chunk_metrics.jsonl` (since v1.19.0; pre-v1.19.0 was `.tmp/`) and fold rollup into `.quality.json` + history JSONL. Set `false` to skip. |
 | `anime` | `--anime` | bool |
 | `grain` | `--grain` | bool |
 | `eight_bit` | `--eight-bit` | bool |
@@ -882,7 +882,7 @@ Every successful encode generates a markdown report listing inputs, sizes, and g
 |---|---|---|
 | Single-file (`compress.py`) | `<output_dir>/<basename>.report.md` | One row, this file only |
 | Queue (`run_queue.py`) — **per-run** | `<queue_dir>/.tmp/report_<YYYY-MM-DD_HH_MM_SS>.md` | Only this run's jobs. Never overwritten — one file per `run_queue.py` invocation. |
-| Queue (`run_queue.py`) — **incremental** | `<queue_dir>/.tmp/<queue_basename>_report.md` | Accumulates every job from every run. Persistence is via a sidecar JSON (`<queue_basename>_report.history.json`) alongside the markdown. |
+| Queue (`run_queue.py`) — **incremental** | `<queue_dir>/logs/<queue_basename>_report.md` (since v1.19.0; pre-v1.19.0 was `.tmp/`) | Accumulates every job from every run. Persistence is via a sidecar JSON (`<queue_basename>_report.history.json`) alongside the markdown. |
 
 The queue runner **passes `--no-report` to each per-job `compress.py` invocation**, so a queue run produces *only* the queue-level reports — no per-file noise in the output directory.
 
@@ -922,7 +922,7 @@ To opt out of the per-file report on a direct `compress.py` run, pass `--no-repo
 
 ## Encoding history log (`encoding_history.jsonl`)
 
-Every encode appends one JSONL record to `C:\_MOJE\other\CUTTED\encoding_history.jsonl` (override via the `CLAUDE_ENCODING_HISTORY_PATH` env var). Records survive across queue runs, batch boundaries, and queue file changes — the file is purely an append-only audit trail you can feed to an LLM or analyze with pandas/jq.
+Every encode appends one JSONL record to `<history_root>/logs/encoding_history.jsonl` (v1.19.0 default; pre-v1.19.0 sat at `<history_root>/encoding_history.jsonl` and is auto-migrated on the next encoder/queue run). The default `<history_root>` is `C:\_MOJE\other\CUTTED`; override the entire path via the `CLAUDE_ENCODING_HISTORY_PATH` env var (the env-var path is honoured verbatim — no `logs/` routing). Records survive across queue runs, batch boundaries, and queue file changes — the file is purely an append-only audit trail you can feed to an LLM or analyze with pandas/jq.
 
 Each record is one JSON object on one line. Schema (v1):
 
@@ -971,7 +971,7 @@ Reading the log for analysis:
 import json
 from pathlib import Path
 records = [json.loads(l) for l in
-           Path(r"C:\_MOJE\other\CUTTED\encoding_history.jsonl")
+           Path(r"C:\_MOJE\other\CUTTED\logs\encoding_history.jsonl")
            .read_text(encoding="utf-8").splitlines() if l.strip()]
 # → list[dict], analyse however you like
 ```
@@ -986,7 +986,7 @@ Behavior:
 
 ## Quality measurement (VMAF / PSNR / SSIM)
 
-After every successful resumable encode, `encode_resumable.py` runs libvmaf comparing target to source and writes the result to a JSON sidecar at `<output_dir>/.tmp/<basename>.quality.json`. The aggregate queue report reads these sidecars and surfaces the scores in the Method column.
+After every successful resumable encode, `encode_resumable.py` runs libvmaf comparing target to source and writes the result to a JSON sidecar at `<output_dir>/logs/<basename>.quality.json` (v1.19.0; pre-v1.19.0 was `.tmp/`). The aggregate queue report reads these sidecars and surfaces the scores in the Method column.
 
 ### Auto-mode (default)
 
@@ -1009,7 +1009,7 @@ Applying `-r` to **both** inputs matters: even nominally-clean source PTSs have 
 
 ### Sidecar caching — re-runs are opt-in
 
-Each successful measurement writes a sidecar JSON containing all scores plus `method`. Both `encode_resumable.py` (after fresh encodes) and the standalone quality-sweep script honor an existing sidecar: if it's there with a `vmaf_mean`, the file is skipped. To force a re-measure for specific files, **delete their sidecars** in `.tmp/<basename>.quality.json` — the sweep / encoder will refill them next run.
+Each successful measurement writes a sidecar JSON containing all scores plus `method`. Both `encode_resumable.py` (after fresh encodes) and the standalone quality-sweep script honor an existing sidecar: if it's there with a `vmaf_mean`, the file is skipped. To force a re-measure for specific files, **delete their sidecars** in `logs/<basename>.quality.json` (v1.19.0; pre-v1.19.0 was `.tmp/`) — the sweep / encoder will refill them next run.
 
 Sidecar fields:
 ```json

@@ -119,16 +119,26 @@ run_bat = run_script
 
 
 def read_quality_sidecar(out_path: Path) -> dict | None:
-    """Read the VMAF/PSNR/SSIM sidecar `encode_resumable.py` writes next to
-    a successful output. Returns None when the sidecar is missing or
-    unreadable — caller fills the report row with placeholders."""
-    sidecar = out_path.parent / ".tmp" / f"{out_path.stem}.quality.json"
-    if not sidecar.exists():
-        return None
-    try:
-        return json.loads(sidecar.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    """Read the VMAF/PSNR/SSIM sidecar ``encode_resumable.py`` writes for a
+    successful output. v1.19.0: prefers the new ``logs/`` location;
+    falls back to the pre-v1.19.0 ``.tmp/`` path so a queue runner picking
+    up sidecars from a partially-migrated workspace (or a sidecar written
+    by an old encoder still on the same machine) keeps reading them.
+    Returns None when the sidecar is missing or unreadable — caller fills
+    the report row with placeholders."""
+    from encode_modules.log_paths import quality_sidecar_path
+    candidates = [
+        quality_sidecar_path(out_path),
+        # Legacy .tmp/ path — harmless fallback after v1.19.0 migration.
+        out_path.parent / ".tmp" / f"{out_path.stem}.quality.json",
+    ]
+    for sidecar in candidates:
+        if sidecar.exists():
+            try:
+                return json.loads(sidecar.read_text(encoding="utf-8"))
+            except Exception:
+                return None
+    return None
 
 
 def _placeholder_row(input_path: Path, in_bytes: int, merged: dict,

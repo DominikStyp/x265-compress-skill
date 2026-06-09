@@ -35,19 +35,35 @@ from pathlib import Path
 # downstream analysis can branch on it.
 SCHEMA_VERSION = 1
 
-# Default history file location. Sits at the CUTTED root so it accumulates
-# across queue/batch boundaries.
-_DEFAULT_HISTORY_PATH = Path(r"C:\_MOJE\other\CUTTED\encoding_history.jsonl")
+# Default history root. Sits at the CUTTED root so the log accumulates
+# across queue/batch boundaries. v1.19.0 routes the default INTO a
+# ``logs/`` subdirectory under this root; the env-var override is honoured
+# verbatim so users with explicit paths see no change.
+_DEFAULT_HISTORY_ROOT = Path(r"C:\_MOJE\other\CUTTED")
+
+
+def default_history_root() -> Path:
+    """Return the directory under which the default history JSONL lives.
+    Exposed so callers (the migration helper, run_queue) can compute the
+    legacy path for one-time relocation into ``logs/``."""
+    return _DEFAULT_HISTORY_ROOT
 
 
 def default_history_path() -> Path:
-    """Resolve the canonical history-file path. CLAUDE_ENCODING_HISTORY_PATH
-    overrides the default; useful for testing or for redirecting to a
-    portable location."""
+    """Resolve the canonical history-file path. ``CLAUDE_ENCODING_HISTORY_PATH``
+    overrides verbatim (useful for testing or redirecting to a portable
+    location). With no override the default is
+    ``<_DEFAULT_HISTORY_ROOT>/logs/encoding_history.jsonl`` (v1.19.0; pre-
+    v1.19.0 sat directly at ``<_DEFAULT_HISTORY_ROOT>/encoding_history.jsonl``
+    — one-shot migration in ``encode_modules.log_paths.migrate_history_root``
+    moves the legacy file the first time the encoder runs)."""
     env = os.environ.get("CLAUDE_ENCODING_HISTORY_PATH")
     if env:
         return Path(env)
-    return _DEFAULT_HISTORY_PATH
+    # Local import to dodge a circular dep: log_paths imports nothing from
+    # history, but several encode_modules imports flow through history.
+    from encode_modules.log_paths import history_jsonl_path
+    return history_jsonl_path(_DEFAULT_HISTORY_ROOT)
 
 
 def append_record(record: dict, *, history_path: Path | None = None) -> None:

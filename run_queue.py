@@ -34,11 +34,16 @@ from pathlib import Path
 import time
 
 from encode_modules.done_dir import resolve_done_dir
+from encode_modules.log_paths import migrate_for_queue_run
 from platform_compat import enable_utf8_io
 from queue_modules.crf_retry import run_job_with_crf_retry
 from queue_modules.job_schema import derive_output_path, merge_job
 from queue_modules.queue_counters import compute_queue_counters, overlay_env
 from queue_modules.queue_io import emit_status_record, reload_queue_with_retry
+from queue_modules.queue_reporting import (
+    print_summary_table as _print_summary_table,
+    write_aggregate_reports as _write_aggregate_reports,
+)
 from queue_modules.queue_item_hook import dispatch_on_queue_item_end
 from queue_modules.queue_state import (
     delete_queue_state,
@@ -65,7 +70,9 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--json-status", metavar="PATH", default=None,
                     help="Append one NDJSON record per finished job to PATH "
                          "(machine-readable; stdout stays human-readable). "
-                         "Tail it to watch a queue run live.")
+                         "Tail it to watch a queue run live. Pass an empty "
+                         "string to enable with the v1.19.0 default path "
+                         "(<queue_folder>/logs/<queue_stem>.json-status.ndjson).")
     ap.add_argument("--reset-state", action="store_true",
                     help="Delete the queue's persistent state sidecar "
                          "(<queue_stem>.state.json) before starting. Use to "
@@ -163,38 +170,6 @@ def _pick_next_job(jobs: list[dict], seen_inputs: set[str],
         if picked is None and input_str not in attempted_inputs:
             picked = raw
     return picked
-
-
-def _print_summary_table(job_reports: list[dict]) -> None:
-    print()
-    print("=" * 70)
-    print("QUEUE COMPLETE")
-    print("=" * 70)
-    name_w = max((len(j["input"]) for j in job_reports), default=20)
-    for idx, j in enumerate(job_reports, 1):
-        print(f"  [{idx:>3}] {j['status']:<22} {j['input']:<{name_w}}")
-
-
-def _write_aggregate_reports(skill_dir: Path, queue_path: Path,
-                            job_reports: list[dict]) -> None:
-    """Write the per-run + incremental markdown reports under <queue_dir>/.tmp.
-    Failures are warned, not fatal — queue completion shouldn't depend on
-    report generation."""
-    try:
-        sys.path.insert(0, str(skill_dir))
-        import report  # noqa: WPS433
-        tmp_dir = queue_path.parent / ".tmp"
-        per_run_path, incremental_path = report.write_run_pair(
-            tmp_dir,
-            queue_stem=queue_path.stem,
-            queue_name=queue_path.name,
-            jobs=job_reports,
-        )
-        print(f"\nPer-run report:    {per_run_path}")
-        print(f"Incremental report: {incremental_path}")
-    except Exception as e:
-        print(f"WARNING: failed to write aggregate report: {e}",
-              file=sys.stderr)
 
 
 # Per-job status -> aggregate category for the process exit code. "clean":
@@ -340,6 +315,14 @@ def main() -> int:
     if not queue_path.is_file():
         sys.exit(f"ERROR: queue file not found: {queue_path}")
 
+    # v1.19.0 one-shot migration: queue-level state + report sidecars +
+    # default history JSONL into logs/. Idempotent across runs; best-effort.
+    _migrated = migrate_for_queue_run(
+        queue_path, _history_module.default_history_root())
+    if _migrated:
+        print(f"Queue: v1.19.0 layout — migrated {len(_migrated)} legacy "
+              f"log file(s) into logs/")
+
     skill_dir = Path(__file__).resolve().parent
     compress_py = skill_dir / "compress.py"
     if not compress_py.is_file():
@@ -359,9 +342,16 @@ def main() -> int:
     if queue_state.completed:
         print(f"Queue: state sidecar records "
               f"{len(queue_state.completed)} previously-completed job(s).")
-    if args.json_status:
+    if args.json_status is not None:
+        # v1.19.0: empty string = "use the default under logs/" (lets queue
+        # runners enable status without hard-coding a path). Explicit
+        # path always wins.
+        if args.json_status == "":
+            from encode_modules.log_paths import queue_json_status_default_path
+            args.json_status = str(queue_json_status_default_path(queue_path))
         # Truncate up front so a re-run starts a clean per-run status stream.
         try:
+            Path(args.json_status).parent.mkdir(parents=True, exist_ok=True)
             open(args.json_status, "w", encoding="utf-8").close()
         except OSError as e:
             sys.exit(f"ERROR: cannot write --json-status file "

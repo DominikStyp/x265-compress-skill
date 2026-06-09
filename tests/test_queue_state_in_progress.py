@@ -36,9 +36,11 @@ class _Td:
         d = Path(self._tmp.name)
         self.queue_path = d / "myq.json"
         self.queue_path.write_text("[]", encoding="utf-8")
-        self.state_path = d / "myq.state.json"
+        # v1.19.0: state sidecar lives in <queue>/logs/.
+        self.state_path = d / "logs" / "myq.state.json"
 
     def write_sidecar(self, data: dict) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(json.dumps(data, indent=2),
                                    encoding="utf-8")
 

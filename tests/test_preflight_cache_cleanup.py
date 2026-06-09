@@ -28,12 +28,14 @@ from encode_modules.done_dir import _cleanup_sidecars  # noqa: E402
 
 
 class DeletePreflightCacheTest(unittest.TestCase):
-    def test_removes_sidecar_next_to_source(self) -> None:
+    def test_removes_sidecar_in_logs(self) -> None:
+        # v1.19.0: cache lives at <src.parent>/logs/<src.name>.preflight.json.
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             src = td / "movie.mp4"
             src.write_bytes(b"src")
-            cache = src.with_suffix(src.suffix + ".preflight.json")
+            cache = td / "logs" / f"{src.name}.preflight.json"
+            cache.parent.mkdir()
             cache.write_text("{}", encoding="utf-8")
             self.assertTrue(cache.exists())
 
@@ -60,7 +62,8 @@ class DeletePreflightCacheTest(unittest.TestCase):
             td = Path(td)
             src = td / "movie.mp4"
             src.write_bytes(b"src")
-            cache = src.with_suffix(src.suffix + ".preflight.json")
+            cache = td / "logs" / f"{src.name}.preflight.json"
+            cache.parent.mkdir()
             cache.write_text("{}", encoding="utf-8")
 
             def boom(self, *a, **k):

@@ -59,9 +59,12 @@ def _probe_duration(src: Path) -> float:
 
 
 def _cache_path_for(src: Path) -> Path:
-    """Pre-flight cache sidecar path. Lives next to the source so it follows
-    the file around if moved; (size, mtime) check below catches replacements."""
-    return src.with_suffix(src.suffix + ".preflight.json")
+    """Pre-flight cache sidecar path. v1.19.0 routes it into
+    ``<src.parent>/logs/<src.name>.preflight.json`` (was next-to-source
+    pre-v1.19.0). The (size, mtime) check below catches replacements —
+    moving the cache one level down doesn't affect cache validity."""
+    from .log_paths import preflight_cache_path
+    return preflight_cache_path(src)
 
 
 def _read_cache(src: Path) -> Optional[dict]:
@@ -117,6 +120,10 @@ def _write_cache(src: Path, result: dict) -> None:
     cache_path = _cache_path_for(src)
     try:
         st = src.stat()
+        # v1.19.0: the cache now lives in <src.parent>/logs/ — ensure the
+        # dir exists before the atomic write so a fresh workspace doesn't
+        # silently fall through to the except branch.
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
         # Atomic write (temp-then-replace): a crash mid-write must never leave a
         # truncated .preflight.json at the final path (atomic-writes invariant).
         tmp = cache_path.with_name(cache_path.name + ".tmp")

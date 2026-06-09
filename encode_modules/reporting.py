@@ -19,6 +19,7 @@ from .chunk_metrics_log import (
     compute_size_percent as _compute_size_percent,
     get_log as _get_chunk_metrics_log,
 )
+from .log_paths import per_encode_report_path, quality_sidecar_path
 from .quality import (
     quality_check,
     quality_check_chunks,
@@ -86,9 +87,8 @@ def measure_quality_and_write_sidecar(src: Path, dst: Path, workdir: Path, *,
     _merge_chunk_metrics_into(sidecar_payload, src=src, dst=dst,
                               total_duration_s=total_duration_s)
     try:
-        sidecar_dir = dst.parent / ".tmp"
-        sidecar_dir.mkdir(parents=True, exist_ok=True)
-        sidecar = sidecar_dir / f"{dst.stem}.quality.json"
+        sidecar = quality_sidecar_path(dst)
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
         # Atomic write: the queue runner parses this sidecar, so a kill
         # mid-write must never leave a truncated JSON at the final path
         # (atomic-writes invariant — same temp-then-replace as hook_config).
@@ -174,9 +174,8 @@ def write_single_file_report(src: Path, dst: Path, *,
     usable standalone if report.py is absent."""
     try:
         import report  # noqa: WPS433
-        tmp_dir = dst.parent / ".tmp"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        md_path = tmp_dir / f"{dst.stem}.report.md"
+        md_path = per_encode_report_path(dst)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
         row = {
             "input": str(src),
             "output": str(dst),

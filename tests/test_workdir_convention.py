@@ -58,7 +58,7 @@ class CompressWorkdirTest(unittest.TestCase):
                            script_writer._render_posix_script):
                 s = render(
                     info, plan, source, Path("/skill"), tmp_dir,
-                    Path(td) / "clip.report.md",
+                    tmp_dir, Path(td) / "clip.report.md",
                     resumable=True, segment_seconds=60, parallel=1,
                     max_output_bytes=None, max_size_percent=None,
                     auto_fix_choke=False, no_pre_flight_scan=False,

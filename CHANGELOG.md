@@ -3,6 +3,78 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.19.0] — 2026-06-09
+
+### Changed
+- **Every log / sidecar artefact now lives in a `logs/` subdirectory.**
+  Pre-v1.19.0 the encoder scattered files across three locations:
+  next-to-source (`.preflight.json`), under `.tmp/` (sidecars +
+  reports), and at the queue/history root (`.state.json`,
+  `encoding_history.jsonl`). v1.19.0 routes everything into the
+  appropriate `logs/`:
+  - `<video_folder>/logs/<output>.quality.json` + `.chunk_metrics.jsonl`
+    + `.report.md`
+  - `<video_folder>/logs/<source>.hooks.json` + `.preflight.json`
+  - `<queue_folder>/logs/<queue_stem>.state.json` + `_report.md` +
+    `_report.history.json`
+  - `<queue_folder>/logs/<queue_stem>.json-status.ndjson` (when
+    `--json-status ""` enables the default path)
+  - `<history_root>/logs/encoding_history.jsonl`
+
+  `CLAUDE_ENCODING_HISTORY_PATH` and explicit `--json-status PATH`
+  overrides are honoured verbatim — only the *default* moves.
+
+- **One-shot automatic migration at startup of every encoder / queue
+  run.** On the first run after upgrading, the encoder scans the legacy
+  locations and `os.link`s any extant log files into `logs/`, then
+  unlinks the legacy entry. Idempotent (target-exists → leave legacy
+  in place for the user to audit). Race-safe under `parallel: 2`:
+  uses `os.link` first so the kernel guarantees a single winner on
+  `FileExistsError` (the loser leaves its legacy untouched); falls
+  back to `shutil.copy2` + `os.unlink` only on cross-volume
+  (`EXDEV` / `EPERM` / `ENOSYS`). Best-effort — an OSError per file
+  never aborts the encoder. A one-line "v1.19.0 layout: migrated N
+  legacy log file(s) into logs/" message reports what moved.
+
+### Fixed
+- **Queue aggregate-report quality scores** (reviewer A pre-ship): the
+  queue runner's `read_quality_sidecar` was still reading from `.tmp/`
+  in the v1.19.0 transition diff; without the fix every aggregate row
+  would silently lose VMAF / PSNR / SSIM. Now reads from the new
+  `logs/` path with a legacy `.tmp/` fallback.
+- **TOCTOU race in `_move_into_logs`** (reviewer B pre-ship): the
+  initial `exists() + shutil.move` pair was non-atomic; two encoder
+  processes could clobber each other under `parallel: 2`. Replaced
+  with `os.link` + `os.unlink` so the kernel arbitrates the winner.
+  New `ConcurrentRaceTest` pins the loser's no-clobber behaviour.
+
+### Added
+- `encode_modules/log_paths.py` — single source of truth for every
+  log/sidecar path + migration helpers (`migrate_video_folder`,
+  `migrate_queue_folder`, `migrate_history_root`,
+  `migrate_for_encode_run`, `migrate_for_queue_run`).
+- `queue_modules/queue_reporting.py` — extracted
+  `print_summary_table` + `write_aggregate_reports` so `run_queue.py`
+  stays under the 500-line cap after the migration-helper additions.
+- `tests/test_log_paths.py` — 22 tests covering path resolution +
+  idempotency + race-safety + cross-volume fallback +
+  reader/writer parity.
+
+### Downgrade note
+Rolling back to ≤v1.18.1 leaves the logs in `logs/`. To restore the
+pre-v1.19.0 layout manually:
+```sh
+mv <video_folder>/logs/*.quality.json <video_folder>/.tmp/
+mv <video_folder>/logs/*.chunk_metrics.jsonl <video_folder>/.tmp/
+mv <video_folder>/logs/*.report.md <video_folder>/.tmp/
+mv <video_folder>/logs/*.hooks.json <video_folder>/.tmp/
+mv <video_folder>/logs/*.preflight.json <video_folder>/
+mv <queue_folder>/logs/*.state.json <queue_folder>/
+mv <queue_folder>/logs/<queue_stem>_report*.md* <queue_folder>/.tmp/
+mv <history_root>/logs/encoding_history.jsonl <history_root>/
+rmdir <video_folder>/logs <queue_folder>/logs <history_root>/logs
+```
+
 ## [1.18.1] — 2026-06-09
 
 ### Changed

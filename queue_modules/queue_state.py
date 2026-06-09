@@ -57,9 +57,13 @@ SCHEMA_VERSION = 1
 
 
 def state_path_for(queue_path: Path) -> Path:
-    """Sidecar path for a given queue file: `<queue_stem>.state.json` in the
-    same directory. Same convention the existing reports use."""
-    return queue_path.with_name(f"{queue_path.stem}.state.json")
+    """Sidecar path for a given queue file. v1.19.0 routes it into
+    ``<queue.parent>/logs/<queue_stem>.state.json`` (was next-to-queue
+    pre-v1.19.0). The one-shot migration in
+    ``encode_modules.log_paths.migrate_queue_folder`` relocates legacy
+    state sidecars on the next queue run."""
+    from encode_modules.log_paths import queue_state_path
+    return queue_state_path(queue_path)
 
 
 @dataclass

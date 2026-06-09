@@ -151,12 +151,25 @@ def _is_inside(child: Path, parent: Path) -> bool:
 def _cleanup_sidecars(sidecar_dir: Path, stem: str) -> None:
     """Hook + preflight sidecars are per-job artifacts (deleted on success);
     quality sidecar stays where the encoder put it (downstream tooling will
-    look there). v1.18.1: preflight used to stay too — the rationale was
-    "content-keyed cache, useful on a future re-encode" — but the dst-exists
-    guard in encode_resumable.main already short-circuits re-runs, so the
-    cache just accumulated clutter."""
-    for name in (f"{stem}.hooks.json", f"{stem}.preflight.json"):
-        path = sidecar_dir / name
+    look there).
+
+    v1.19.0 NOTE: `sidecar_dir` is the VIDEO FOLDER (caller passes
+    `workdir.parent`). The hook + preflight sidecars themselves live under
+    `<sidecar_dir>/logs/` (per ``log_paths``). We sweep BOTH ``logs/`` (the
+    v1.19.0 location) AND the legacy ``.tmp/`` + sidecar_dir root paths so
+    a partially-migrated workspace still cleans up cleanly. v1.18.1:
+    preflight used to stay — the rationale was "content-keyed cache,
+    useful on a future re-encode" — but the dst-exists guard in
+    encode_resumable.main already short-circuits re-runs."""
+    candidates = [
+        sidecar_dir / "logs" / f"{stem}.hooks.json",
+        sidecar_dir / "logs" / f"{stem}.preflight.json",
+        # Legacy sweep — harmless if the v1.19.0 migration ran first
+        # (files won't be there).
+        sidecar_dir / f"{stem}.hooks.json",
+        sidecar_dir / f"{stem}.preflight.json",
+    ]
+    for path in candidates:
         try:
             if path.exists():
                 path.unlink()

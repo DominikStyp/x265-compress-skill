@@ -46,6 +46,11 @@ from encode_modules.history_state import (
     mark_status,
 )
 from encode_modules.job_end_hook import JobEndHook
+import history as _history_module
+from encode_modules.log_paths import (
+    chunk_metrics_path,
+    migrate_for_encode_run,
+)
 from encode_modules.pre_flight import delete_preflight_cache
 from encode_modules.preflight_decision import handle_preflight
 from encode_modules.probes import probe_duration, probe_full
@@ -119,6 +124,16 @@ def main() -> int:
     workdir = Path(args.workdir).resolve()
 
     _validate_paths(src, dst, workdir)
+
+    # v1.19.0: one-shot legacy-logs migration into <video_folder>/logs/
+    # (sidecars) + <history_root>/logs/ (encoding_history.jsonl). Idempotent,
+    # best-effort. Run BEFORE any history append / sidecar write so the
+    # v1.19.0 paths win the first writer race.
+    _migrated = migrate_for_encode_run(
+        src.parent, _history_module.default_history_root())
+    if _migrated:
+        print(f"      v1.19.0 layout: migrated {len(_migrated)} legacy log "
+              f"file(s) into logs/")
 
     # Register the source as off-limits to any rename/unlink routed
     # through ensure_not_source. Defense-in-depth — no current code path
@@ -225,11 +240,11 @@ def main() -> int:
             _fps_decimal = (float(_n) / float(_d)) if float(_d) else None
         except (TypeError, ValueError):
             _fps_decimal = None
-    # Sidecar lives in dst.parent/.tmp alongside .quality.json (NOT inside
-    # `workdir`, which cleanup() wipes after a successful encode). The user
-    # can then inspect per-chunk metrics post-hoc even after the workdir's
-    # source chunks are gone.
-    _metrics_jsonl = dst.parent / ".tmp" / f"{dst.stem}.chunk_metrics.jsonl"
+    # Sidecar lives in dst.parent/logs/ alongside .quality.json (NOT inside
+    # `workdir`, which cleanup() wipes after a successful encode). v1.19.0
+    # routes every per-encode artefact under logs/ — encode_modules.log_paths
+    # is the single source of truth for these computations.
+    _metrics_jsonl = chunk_metrics_path(dst)
     # getattr with None fallback so SimpleNamespace-style test stubs that
     # only set a subset of args don't crash here. Production parse_args
     # always populates crf/preset.

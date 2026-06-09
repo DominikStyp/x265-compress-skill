@@ -45,7 +45,8 @@ class QualitySidecarAtomicTest(unittest.TestCase):
                     Path("src.mkv"), dst, Path(td) / "wd",
                     args=args, n_chunks_total=1,
                 )
-            sidecar = dst.parent / ".tmp" / f"{dst.stem}.quality.json"
+            # v1.19.0: sidecar lives under logs/, not .tmp/.
+            sidecar = dst.parent / "logs" / f"{dst.stem}.quality.json"
 
             self.assertEqual(got, scores)
             # The write must have gone through os.replace (atomic), landing at
@@ -61,6 +62,57 @@ class QualitySidecarAtomicTest(unittest.TestCase):
             self.assertEqual(json.loads(sidecar.read_text(encoding="utf-8")),
                              scores)
             self.assertEqual(list(sidecar.parent.glob("*.tmp")), [])
+
+
+class QueueRunnerReaderWriterParityTest(unittest.TestCase):
+    """v1.19.0 reader/writer parity: ``encode_modules/reporting.py`` writes
+    the sidecar via ``quality_sidecar_path(dst)`` (under ``logs/``). The
+    queue runner's ``read_quality_sidecar`` must read from the same
+    location, otherwise every aggregate-report row silently loses VMAF
+    scores — the bug Reviewer A caught pre-ship."""
+
+    def test_reader_finds_sidecar_at_logs_path(self) -> None:
+        from queue_modules.job_runner import read_quality_sidecar
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            dst = td / "movie.mkv"
+            sidecar = td / "logs" / "movie.quality.json"
+            sidecar.parent.mkdir()
+            payload = {"vmaf_mean": 97.3, "vmaf_min": 94.1}
+            sidecar.write_text(json.dumps(payload), encoding="utf-8")
+
+            got = read_quality_sidecar(dst)
+            self.assertEqual(got, payload)
+
+    def test_reader_still_finds_legacy_tmp_path(self) -> None:
+        # Back-compat: a sidecar written by a pre-v1.19.0 encoder (or by a
+        # partially-migrated workspace) under .tmp/ is still picked up.
+        from queue_modules.job_runner import read_quality_sidecar
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            dst = td / "movie.mkv"
+            sidecar = td / ".tmp" / "movie.quality.json"
+            sidecar.parent.mkdir()
+            payload = {"vmaf_mean": 96.5}
+            sidecar.write_text(json.dumps(payload), encoding="utf-8")
+
+            got = read_quality_sidecar(dst)
+            self.assertEqual(got, payload)
+
+    def test_reader_prefers_logs_when_both_exist(self) -> None:
+        from queue_modules.job_runner import read_quality_sidecar
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            dst = td / "movie.mkv"
+            new_sc = td / "logs" / "movie.quality.json"
+            old_sc = td / ".tmp" / "movie.quality.json"
+            new_sc.parent.mkdir()
+            old_sc.parent.mkdir()
+            new_sc.write_text('{"vmaf_mean": 97.5}', encoding="utf-8")
+            old_sc.write_text('{"vmaf_mean": 80.0}', encoding="utf-8")
+
+            got = read_quality_sidecar(dst)
+            self.assertEqual(got, {"vmaf_mean": 97.5})
 
 
 if __name__ == "__main__":
