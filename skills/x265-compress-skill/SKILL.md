@@ -310,7 +310,7 @@ Some upstream `.mp4` / `.mkv` files have bitstream corruption in a specific time
 
 Before any encoding, `pre_flight_scan` walks the source in `segment_seconds`-sized windows with `ffmpeg -ss N -t seg_sec -xerror -f null -`. Each window that returns non-zero is recorded with its time range + first error lines. If ANY window is bad, encode_resumable.py exits **code 6** (`pre-flight-failed`); the queue runner moves to the next file. **No chunking, no encode CPU wasted.**
 
-Result is cached in `<source>.preflight.json` keyed on `(file_size, file_mtime)`. Re-runs / queue restarts skip the scan unless the source bytes changed. The cache also accelerates the case where Claude rebuilds the queue after a reboot.
+Result is cached in `<source>.preflight.json` keyed on `(file_size, file_mtime)`. Re-runs / queue restarts skip the scan unless the source bytes changed. The cache also accelerates the case where Claude rebuilds the queue after a reboot. **Since v1.18.1, the cache sidecar is deleted after a successful encode** — re-running the same source after a real success is already short-circuited by the dst-exists guard at the top of `main()`, so the cache only ever helped retries after an abort. Aborts (`pre-flight-failed`, `verify-failed`, `stopped-threshold`, `stopped-quality-threshold`, `stopped-by-user`, chunk-failed) still leave the cache in place, so the next attempt skips re-scanning.
 
 #### `--auto-patch-source` (opt-in): automate the surgical patch
 
@@ -803,7 +803,7 @@ Set `done_dir` in a queue's `defaults` or per job (or `--done-dir` on `compress.
 
 **Sidecar policy:**
 - `<stem>.quality.json` stays in `.tmp/` (downstream tooling looks there).
-- `<stem>.preflight.json` stays in `.tmp/` (content-keyed cache; useful on a future re-encode of the same source).
+- `<stem>.preflight.json` is deleted (per-job artifact since v1.18.1 — the prior "content-keyed cache" rationale was scrapped because the dst-exists guard at the top of `encode_resumable.main` already short-circuits re-runs of the same source). The actual production cache sidecar lives next to the source (`<src>.<suffix>.preflight.json`) and is removed there by `delete_preflight_cache(src)` on the success path; this sidecar-dir cleanup is defensive parity for any caller that places one in `.tmp/`.
 - `<stem>.hooks.json` is deleted (per-job artifact, no value after the move).
 
 ### Persistent queue state (`<queue_stem>.state.json`)

@@ -3,6 +3,30 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.18.1] — 2026-06-09
+
+### Changed
+- **Per-source `.preflight.json` cache is now deleted after a successful
+  encode.** Before, the cache sidecar lived forever next to the source
+  ("content-keyed, useful on a future re-encode"). In practice the
+  `dst.exists()` early-return at the top of `encode_resumable.main`
+  already short-circuits any re-run of the same source, so the cache
+  only ever accumulated as clutter. The delete is best-effort
+  (`OSError` swallowed — antivirus / cloud-sync locks won't crash the
+  encoder) and runs on the SUCCESS path only: every abort
+  (`pre-flight-failed`, `verify-failed`, `stopped-threshold`,
+  `stopped-quality-threshold`, `stopped-by-user`, chunk-failed) still
+  keeps the cache so the next attempt skips re-scanning. Mirrored in
+  `done_dir._cleanup_sidecars` for defensive parity with the
+  workdir-located sidecar (legacy callers).
+
+  Implementation: `delete_preflight_cache(src) -> bool` in
+  `pre_flight.py`; one call site in `encode_resumable.main` between
+  `finalize_history_state` and `cleanup(workdir)`. Two structural
+  tests pin the call to the success branch (count==1 + position
+  between finalize and cleanup) so a future refactor that hoists it
+  onto an abort path is caught immediately.
+
 ## [1.18.0] — 2026-06-07
 
 ### Added

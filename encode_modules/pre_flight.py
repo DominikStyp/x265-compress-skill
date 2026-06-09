@@ -86,6 +86,31 @@ def _read_cache(src: Path) -> Optional[dict]:
         return None
 
 
+def delete_preflight_cache(src: Path) -> bool:
+    """Remove the per-source ``<src>.preflight.json`` cache sidecar.
+
+    Called on the success boundary in ``encode_resumable.main`` (and from
+    ``done_dir._cleanup_sidecars`` as a defensive parity pass). The cache
+    used to live forever — "content-keyed, useful on a future re-encode" —
+    but the ``dst.exists()`` early-return at the top of main already
+    short-circuits any re-run, so the file only added clutter.
+
+    Best-effort: a missing cache returns False; an unlink that raises
+    OSError (permissions, busy file, network share) is swallowed and
+    also returns False. The caller never has to defend against this
+    helper raising — important because it runs AFTER history is flushed
+    and bubbling an exception here would crash an already-successful
+    encode at the cleanup step."""
+    cache_path = _cache_path_for(src)
+    if not cache_path.exists():
+        return False
+    try:
+        cache_path.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def _write_cache(src: Path, result: dict) -> None:
     """Persist scan result so re-runs skip the work. Failures are silent —
     a missing cache just means we'll re-scan next time."""

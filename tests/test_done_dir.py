@@ -168,7 +168,12 @@ class MoveToDoneDirTest(unittest.TestCase):
                       "move_to_done_dir must use shutil.move for "
                       "cross-volume safety")
 
-    def test_sidecars_quality_moves_preflight_stays_hooks_deleted(self) -> None:
+    def test_sidecars_quality_stays_preflight_and_hooks_deleted(self) -> None:
+        # v1.18.1: preflight is now treated as a per-job artifact (deleted
+        # on success) — the prior "content-keyed cache, useful on a future
+        # re-encode" rationale was scrapped because the dst-exists guard at
+        # the top of encode_resumable.main already short-circuits re-runs,
+        # so the preflight cache only added clutter.
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             src, out = self._setup_pair(td)
@@ -183,11 +188,11 @@ class MoveToDoneDirTest(unittest.TestCase):
             done.mkdir()
             move_to_done_dir(source=src, output=out, done_dir=done,
                              workdir=tmp, sidecar_dir=tmp)
-            # quality moves with the output → into done_dir's .tmp/ alongside
-            # any future quality data; pragmatic choice — stays in `tmp`
-            # alongside the original tmp_dir mechanism: see implementation.
+            # hooks + preflight are per-job — both removed.
             self.assertFalse((tmp / "movie.hooks.json").exists())
-            self.assertTrue((tmp / "movie.preflight.json").exists())
+            self.assertFalse((tmp / "movie.preflight.json").exists())
+            # quality stays — downstream tooling still reads it.
+            self.assertTrue((tmp / "movie.quality.json").exists())
 
     def test_hooks_sidecar_deleted_for_mkv_source(self) -> None:
         # Reviewer-flagged bug: when the source is `.mkv`, derive_output_path

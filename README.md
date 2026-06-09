@@ -182,7 +182,7 @@ next to your video files:
 |---|---|
 | Encoder script (`.bat` / `.sh`) | `<video_folder>/.tmp/compress_<name>.bat` |
 | Chunked workdir | `<video_folder>/.tmp/.compress_<name>/` |
-| Pre-flight scan cache | `<source_video>.preflight.json` (next to source) |
+| Pre-flight scan cache | `<source_video>.preflight.json` (next to source — removed on successful encode since v1.18.1; kept across aborts so retries skip the scan) |
 | Quality scores sidecar | `<video_folder>/.tmp/<output>.quality.json` |
 | Per-chunk metrics log (since v1.18.0) | `<video_folder>/.tmp/<output>.chunk_metrics.jsonl` |
 | Per-encode markdown report | `<video_folder>/.tmp/<output>.report.md` |

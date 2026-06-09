@@ -88,9 +88,10 @@ def move_to_done_dir(*,
     final paths.
 
     `sidecar_dir` (optional) is the `.tmp/` directory holding the per-source
-    sidecar JSONs; when provided, the per-job hooks sidecar is deleted (the
-    file's job is done) and the per-source preflight cache is left in place
-    (it's content-keyed and useful if the same source ever returns)."""
+    sidecar JSONs; when provided, the per-job sidecars (hooks + preflight)
+    are deleted (their job is done — see v1.18.1 change-log entry). The
+    quality sidecar stays where the encoder put it; downstream tooling
+    still reads it."""
     if _samefile_parent(source, done_dir):
         return MoveResult(source_final=source, output_final=output,
                           moved=False)
@@ -148,14 +149,18 @@ def _is_inside(child: Path, parent: Path) -> bool:
 
 
 def _cleanup_sidecars(sidecar_dir: Path, stem: str) -> None:
-    """Hook sidecar is a per-job artifact (deleted); preflight stays
-    (content-keyed cache, useful on a future re-encode); quality sidecar
-    stays where the encoder put it (downstream tooling will look there)."""
-    hooks = sidecar_dir / f"{stem}.hooks.json"
-    try:
-        if hooks.exists():
-            hooks.unlink()
-    except OSError:
-        # Best-effort cleanup — a permissions issue here mustn't break the
-        # move. Leaving the sidecar in place is harmless.
-        pass
+    """Hook + preflight sidecars are per-job artifacts (deleted on success);
+    quality sidecar stays where the encoder put it (downstream tooling will
+    look there). v1.18.1: preflight used to stay too — the rationale was
+    "content-keyed cache, useful on a future re-encode" — but the dst-exists
+    guard in encode_resumable.main already short-circuits re-runs, so the
+    cache just accumulated clutter."""
+    for name in (f"{stem}.hooks.json", f"{stem}.preflight.json"):
+        path = sidecar_dir / name
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            # Best-effort cleanup — a permissions issue here mustn't break the
+            # move. Leaving the sidecar in place is harmless.
+            pass

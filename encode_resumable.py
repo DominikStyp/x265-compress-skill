@@ -46,6 +46,7 @@ from encode_modules.history_state import (
     mark_status,
 )
 from encode_modules.job_end_hook import JobEndHook
+from encode_modules.pre_flight import delete_preflight_cache
 from encode_modules.preflight_decision import handle_preflight
 from encode_modules.probes import probe_duration, probe_full
 from platform_compat import enable_ansi, enable_utf8_io
@@ -273,6 +274,15 @@ def main() -> int:
         encode_src, dst, workdir, chunks, elapsed, quality_scores,
         encode_order=reorder_middle_first(chunks),
     )
+
+    # v1.18.1: drop the per-source preflight cache now that the encode is
+    # verified + history flushed. Targets the ORIGINAL `src` (not encode_src),
+    # because the cache sidecar always lives next to the user-supplied file —
+    # even with --auto-patch-source, the patched copy gets its own sidecar
+    # inside the workdir which `cleanup(workdir)` below wipes. Best-effort
+    # (delete_preflight_cache never raises); the dst.exists() guard at the
+    # top of main makes re-runs short-circuit before the scan would run anyway.
+    delete_preflight_cache(src)
 
     ensure_not_source(workdir)
     cleanup(workdir)
