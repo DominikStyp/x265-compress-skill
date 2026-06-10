@@ -34,7 +34,7 @@ def measure_quality_and_write_sidecar(src: Path, dst: Path, workdir: Path, *,
                                      total_duration_s: float | None = None
                                      ) -> dict | None:
     """Run the VMAF/PSNR/SSIM measurement and persist a sidecar JSON under
-    `.tmp/<basename>.quality.json` so the queue runner can pull scores into
+    `logs/<basename>.quality.json` so the queue runner can pull scores into
     its aggregate report. Pure measurement — does NOT trigger a re-encode
     on low scores (a low VMAF means CRF was too aggressive for the content,
     which is a subjective tuning decision, not a bug)."""
@@ -168,7 +168,7 @@ def write_single_file_report(src: Path, dst: Path, *,
                             source_bytes: int,
                             elapsed_s: float,
                             quality_scores: dict | None) -> None:
-    """Write the per-file markdown report under `.tmp/<basename>.report.md`.
+    """Write the per-file markdown report under `logs/<basename>.report.md`.
     Skipped via `--no-report` (the queue runner sets that because it writes
     its own aggregate). report.py is imported lazily so this module is
     usable standalone if report.py is absent."""

@@ -59,7 +59,14 @@ class ConcatProgressTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             wd = _workdir(Path(td))
             dst = Path(td) / "out.mkv"
-            popen = mock.MagicMock(return_value=_FakeProc(_PROGRESS))
+            # The fake ffmpeg must 'produce' its output: since the atomic-
+            # write fix, concat muxes into a .concat-tmp temp (last argv
+            # element) which concat_chunks os.replace()s onto dst.
+            def popen_writing_output(cmd, **kwargs):
+                Path(cmd[-1]).write_bytes(b"e")
+                return _FakeProc(_PROGRESS)
+
+            popen = mock.MagicMock(side_effect=popen_writing_output)
             buf = io.StringIO()
             with mock.patch.object(chunking.subprocess, "Popen", popen), \
                  redirect_stdout(buf):

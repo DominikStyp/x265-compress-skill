@@ -22,6 +22,7 @@ rather than discarded (per the "never delete encoded chunks" memory rule).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -246,9 +247,14 @@ def write_needs_fix_sidecar(workdir: Path, chunk: Path, *,
             "`-c:a aac -af aresample=async=1` instead of `-c:a copy`"
         ),
     }
+    # Atomic temp + os.replace, like every other load-bearing JSON sidecar
+    # (quality, preflight cache, queue state): a kill mid-write must never
+    # leave a truncated, unparseable contract file at the final name.
     try:
-        sidecar.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    except Exception as e:
+        tmp = sidecar.with_name(sidecar.name + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp, sidecar)
+    except OSError as e:
         print(f"WARNING: failed to write needs_fix sidecar: {e}",
               file=sys.stderr)
     return sidecar

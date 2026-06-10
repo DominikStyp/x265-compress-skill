@@ -166,8 +166,9 @@ def build_job_row(*, input_path: Path, out_path: Path,
     their derived paths, `out_path.stat()` would return None and the row
     would lose its output size + savings. We detect the move by stat-ing
     the configured done_dir's destination and use that path instead. The
-    quality sidecar lives in `<out_path.parent>/.tmp/` and is NOT moved
-    by `done_dir`, so it's still found at the original location."""
+    quality sidecar lives in `<out_path.parent>/logs/` (with a legacy
+    `.tmp/` fallback for pre-v1.19.0 runs) and is NOT moved by `done_dir`,
+    so it's still found at the original location."""
     output_bytes = _resolve_output_bytes(out_path, merged)
     plan = (summary or {}).get("plan") or {}
     row: dict = {

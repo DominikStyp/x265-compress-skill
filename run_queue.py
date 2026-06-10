@@ -315,6 +315,17 @@ def main() -> int:
     if not queue_path.is_file():
         sys.exit(f"ERROR: queue file not found: {queue_path}")
 
+    skill_dir = Path(__file__).resolve().parent
+    compress_py = skill_dir / "compress.py"
+    if not compress_py.is_file():
+        sys.exit(f"ERROR: compress.py missing at {compress_py}")
+
+    # --status: read-only inspector. Early exit, no encoding — and crucially
+    # BEFORE the log migration below, which physically moves files; "no side
+    # effects" is part of the flag's documented contract.
+    if args.status:
+        return _run_status_inspector(queue_path, as_json=args.status_json)
+
     # v1.19.0 one-shot migration: queue-level state + report sidecars +
     # default history JSONL into logs/. Idempotent across runs; best-effort.
     _migrated = migrate_for_queue_run(
@@ -322,15 +333,6 @@ def main() -> int:
     if _migrated:
         print(f"Queue: v1.19.0 layout — migrated {len(_migrated)} legacy "
               f"log file(s) into logs/")
-
-    skill_dir = Path(__file__).resolve().parent
-    compress_py = skill_dir / "compress.py"
-    if not compress_py.is_file():
-        sys.exit(f"ERROR: compress.py missing at {compress_py}")
-
-    # --status: read-only inspector. Early exit, no encoding.
-    if args.status:
-        return _run_status_inspector(queue_path, as_json=args.status_json)
 
     if args.reset_state:
         delete_queue_state(queue_path)

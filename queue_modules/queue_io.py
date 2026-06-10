@@ -39,8 +39,14 @@ def load_queue(queue_path: Path) -> tuple[dict, list[dict]]:
         return {}, data
     if isinstance(data, dict):
         return data.get("defaults", {}), data.get("jobs", [])
-    raise SystemExit(
-        f"ERROR: queue file must contain a list or an object, "
+    # ValueError, NOT SystemExit: SystemExit derives from BaseException and
+    # would sail past the `except Exception` seams in reload_queue_with_retry
+    # and run_queue.main's mid-run reload loop — a user mid-edit saving a
+    # bad root type would then kill the runner WITHOUT the end-of-queue
+    # summary/report instead of degrading gracefully. At startup the caller
+    # still turns this into a fatal exit.
+    raise ValueError(
+        f"queue file must contain a list or an object, "
         f"got {type(data).__name__}"
     )
 

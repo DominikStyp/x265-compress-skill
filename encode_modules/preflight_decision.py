@@ -82,5 +82,7 @@ def _try_auto_patch(src: Path, workdir: Path, scan: dict,
 
     print(f"  + auto-patch SUCCEEDED — encoding will proceed against "
           f"{patched.name}")
+    # ADDS the patched copy to the guard set — the user's original (already
+    # registered at startup) STAYS protected alongside it.
     protect_source(patched)
     return "patched", patched, scan, rescan

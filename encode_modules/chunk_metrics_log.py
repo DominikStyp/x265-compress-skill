@@ -6,7 +6,7 @@ live terminal and evaporated on any unattended queue run. This module
 captures it to a JSONL the queue runner folds into the per-file summary
 AND the encoding_history.jsonl record.
 
-On-disk: ``<dst.parent>/.tmp/<dst.stem>.chunk_metrics.jsonl`` — one
+On-disk: ``<dst.parent>/logs/<dst.stem>.chunk_metrics.jsonl`` — one
 self-contained JSON line per chunk event. Two events per chunk:
   1. WORKER BASE ROW from chunk_worker / encode_serial / chunk_recovery
      after the ``.part`` -> ``.mkv`` rename — carries chunk_name,

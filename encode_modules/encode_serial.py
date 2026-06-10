@@ -22,6 +22,7 @@ from platform_compat import (
 
 from .chunk_hook import ChunkHook, fire_for_chunk
 from .chunk_metrics_log import record_chunk_metrics
+from .chunk_recovery import _quarantine_part
 from .chunking import ffmpeg_chunk_cmd, reorder_middle_first
 from .finish_signal import FINISH_FILENAME, FinishSignal
 from .history_state import mark_status, record_chunk_elapsed
@@ -106,8 +107,10 @@ def encode_chunks_serial(chunks: list[Path], workdir: Path, *,
         chunk_elapsed = time.monotonic() - chunk_start
 
         if rc != 0:
-            if part.exists():
-                part.unlink()
+            # Quarantine (rename aside), NEVER unlink: the .part holds real
+            # encoded bytes of the attempt that just failed — user data per
+            # the never-delete-encoded-chunks rule, same as the parallel path.
+            _quarantine_part(part, "serial-encode-failed")
             # Fire the failure hook before exiting (enc_*.mkv absent -> status
             # "failed"), so an alerting hook learns about the failed chunk too.
             fire_for_chunk(chunk_hook, chunk=chunk, workdir=workdir,

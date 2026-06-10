@@ -21,6 +21,7 @@ from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 from .concat_list import concat_list_lines
 from .probes import probe_duration
 from .progress_bar import ProgressBar, read_ffmpeg_progress
+from .source_guard import ensure_not_source
 
 
 def split_source(src: Path, workdir: Path, seg_sec: int) -> list[Path]:
@@ -182,10 +183,12 @@ def concat_chunks(workdir: Path, dst: Path, *,
             f"chunks; workdir preserved."
         )
 
-    # Only finalized chunks. `enc_*.mkv` would also match `enc_*.part.mkv`
-    # (in-flight or abandoned), which would splice corrupt segments into the
-    # final video.
-    encs = sorted(c for c in workdir.glob("enc_*.mkv") if ".part" not in c.suffixes)
+    # Concat EXACTLY the expected paired set — never a broad `enc_*.mkv`
+    # glob. A glob also matches `enc_*.part.mkv` (in-flight or abandoned)
+    # AND `enc_*.broken-<stamp>.mkv` quarantines from verify_loop (whose
+    # suffixes contain no ".part", so a suffix check can't exclude them) —
+    # either would splice corrupt segments into the final video.
+    encs = sorted(expected)
     if not encs:
         sys.exit("ERROR: no encoded chunks to concatenate")
     concat_list = workdir / "concat.txt"
@@ -203,6 +206,14 @@ def concat_chunks(workdir: Path, dst: Path, *,
     # and is no-op when timestamps are already clean.
     # -progress pipe:1 + -nostats stream machine-readable progress to stdout so
     # we can draw a bar; ffmpeg's own logs/errors still go to inherited stderr.
+    #
+    # Atomic write: mux into a .concat-tmp temp and os.replace onto dst only
+    # after rc==0. The concat is a minutes-long mux — a kill mid-way must not
+    # leave a truncated dst, because encode_resumable.main()'s dst.exists()
+    # short-circuit would mistake it for a finished encode on the next run.
+    # The temp extension can't drive ffmpeg's muxer inference, hence the
+    # explicit -f matroska.
+    tmp_dst = dst.with_name(dst.name + ".concat-tmp")
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-fflags", "+genpts",
@@ -210,7 +221,8 @@ def concat_chunks(workdir: Path, dst: Path, *,
         "-i", str(concat_list),
         "-c", "copy",
         "-progress", "pipe:1", "-nostats",
-        str(dst),
+        "-f", "matroska",
+        str(tmp_dst),
     ]
     bar = ProgressBar(f"[3/4] Concatenating {len(encs)} chunks")
     proc = None
@@ -245,9 +257,15 @@ def concat_chunks(workdir: Path, dst: Path, *,
         bar.finish()
     if rc != 0:
         sys.exit(f"ERROR: concat failed (exit {rc})")
+    os.replace(tmp_dst, dst)
 
 
 def cleanup(workdir: Path) -> None:
-    """Remove the chunk workdir after a successful encode + verify."""
+    """Remove the chunk workdir after a successful encode + verify.
+
+    Carries its own source guard (defense-in-depth): this is the single
+    most destructive call in the pipeline and is a public module function,
+    so it must not rely on every caller remembering ensure_not_source."""
+    ensure_not_source(workdir)
     print(f"[4/4] Cleaning up {workdir}")
     shutil.rmtree(workdir, ignore_errors=True)

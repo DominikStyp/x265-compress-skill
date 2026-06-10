@@ -60,6 +60,15 @@ from platform_compat import low_priority_popen_kwargs, wrap_cmd_for_low_priority
 # MPEG-TS roundtrip won't fix.
 DTS_MARKER = "non monotonically increasing dts"
 
+# This module runs on the post-verify-failure recovery path — i.e. against
+# the population of files MOST likely to wedge a demuxer. Every subprocess
+# is therefore bounded: the probe like every other probe in the repo, the
+# remux legs generously (stream-copy of even a multi-GB file finishes in
+# minutes; only a true hang ever reaches the cap — mirrors the decode-walk
+# ceiling rationale in verify.py).
+_PROBE_TIMEOUT_S = 120
+_REMUX_TIMEOUT_S = 4 * 3600
+
 
 def is_dts_only_verify_failure(problems: list[str]) -> bool:
     """True if every entry in `problems` mentions the DTS marker — the class
@@ -82,6 +91,7 @@ def _probe_codec(path: Path, stream_type: str) -> Optional[str]:
             ["ffprobe", "-v", "error", "-print_format", "json",
              "-show_streams", "-select_streams", stream_type, str(path)],
             capture_output=True, text=True, encoding="utf-8",
+            timeout=_PROBE_TIMEOUT_S,
         )
         if r.returncode != 0:
             return None
@@ -89,7 +99,10 @@ def _probe_codec(path: Path, stream_type: str) -> Optional[str]:
         if not streams:
             return None
         return streams[0].get("codec_name")
-    except Exception:
+    except (OSError, subprocess.SubprocessError, ValueError):
+        # OSError: ffprobe missing/unspawnable. SubprocessError: timeout.
+        # ValueError covers json.JSONDecodeError on garbage stdout. The
+        # caller treats None as "fall back to the encoder's default codec".
         return None
 
 
@@ -121,17 +134,24 @@ def attempt_dts_fix_remux(dst: Path) -> bool:
     new_path = dst.with_suffix(dst.suffix + ".dtsfix.tmp")
 
     # Leg 1: mkv -> mpegts. Strips container-level DTS quirks.
-    r1 = subprocess.run(
-        wrap_cmd_for_low_priority(
-            ["ffmpeg", "-v", "error", "-hide_banner", "-y",
-             "-i", str(dst),
-             "-c", "copy",
-             "-bsf:v", v_bsf,
-             "-f", "mpegts", str(ts_path)]
-        ),
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        **low_priority_popen_kwargs(),
-    )
+    try:
+        r1 = subprocess.run(
+            wrap_cmd_for_low_priority(
+                ["ffmpeg", "-v", "error", "-hide_banner", "-y",
+                 "-i", str(dst),
+                 "-c", "copy",
+                 "-bsf:v", v_bsf,
+                 "-f", "mpegts", str(ts_path)]
+            ),
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_REMUX_TIMEOUT_S,
+            **low_priority_popen_kwargs(),
+        )
+    except subprocess.TimeoutExpired:
+        print(f"[DTS-fix] MPEG-TS pack timed out after {_REMUX_TIMEOUT_S}s "
+              f"(decoder hang?); intermediate left at {ts_path}",
+              file=sys.stderr)
+        return False
     if r1.returncode != 0:
         # Don't leave a partial ts file silently — keep it for inspection,
         # but log so the user knows it's there.
@@ -140,20 +160,33 @@ def attempt_dts_fix_remux(dst: Path) -> bool:
               file=sys.stderr)
         return False
 
-    # Leg 2: mpegts -> mkv with regenerated PTS/DTS.
-    r2 = subprocess.run(
-        wrap_cmd_for_low_priority(
-            ["ffmpeg", "-v", "error", "-hide_banner", "-y",
-             "-fflags", "+genpts",
-             "-i", str(ts_path),
-             "-c", "copy",
-             "-bsf:a", "aac_adtstoasc",
-             "-avoid_negative_ts", "make_zero",
-             str(new_path)]
-        ),
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        **low_priority_popen_kwargs(),
-    )
+    # Leg 2: mpegts -> mkv with regenerated PTS/DTS. The `-f matroska` is
+    # load-bearing: `new_path` ends in `.dtsfix.tmp`, and ffmpeg infers the
+    # output muxer from the extension — `.tmp` is not a registered format,
+    # so without the explicit flag this leg fails on EVERY file ("Unable to
+    # choose an output format") and the whole DTS auto-recovery silently
+    # never works.
+    try:
+        r2 = subprocess.run(
+            wrap_cmd_for_low_priority(
+                ["ffmpeg", "-v", "error", "-hide_banner", "-y",
+                 "-fflags", "+genpts",
+                 "-i", str(ts_path),
+                 "-c", "copy",
+                 "-bsf:a", "aac_adtstoasc",
+                 "-avoid_negative_ts", "make_zero",
+                 "-f", "matroska",
+                 str(new_path)]
+            ),
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_REMUX_TIMEOUT_S,
+            **low_priority_popen_kwargs(),
+        )
+    except subprocess.TimeoutExpired:
+        print(f"[DTS-fix] Remux back to mkv timed out after "
+              f"{_REMUX_TIMEOUT_S}s; intermediate ts at {ts_path}, partial "
+              f"mkv at {new_path}", file=sys.stderr)
+        return False
     if r2.returncode != 0:
         print(f"[DTS-fix] Remux back to mkv failed (rc={r2.returncode}); "
               f"intermediate ts at {ts_path}, partial mkv at {new_path}",

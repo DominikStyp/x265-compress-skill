@@ -129,7 +129,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                          "place.")
     ap.add_argument("--no-log-chunk-metrics", action="store_true",
                     help="With --resumable, skip writing the per-chunk metrics "
-                         "JSONL (.tmp/<stem>.chunk_metrics.jsonl). Default is "
+                         "JSONL (logs/<stem>.chunk_metrics.jsonl). Default is "
                          "to log time/size/bitrate per chunk + the per-file "
                          "encode rollup into the .quality.json sidecar. "
                          "Independent of --visual-quality-threshold.")

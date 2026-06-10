@@ -67,7 +67,7 @@ python3 run_queue.py /path/to/queue.json
 ```
 (Use `python` on Windows.)
 
-d. Read the exit code + the markdown report it writes to `<videos>/.tmp/report_<timestamp>.md`. Report results to the user.
+d. Read the exit code + the markdown report it writes to `<videos>/logs/report_<timestamp>.md`. Report results to the user.
 
 See [`docs/AGENT_QUEUE_RECIPES.md`](../../docs/AGENT_QUEUE_RECIPES.md) for paste-ready recipes (anime, grain, mobile-compat, archival, etc.) and the full per-job key schema + exit-code mapping.
 
@@ -85,7 +85,7 @@ See [`docs/AGENT_QUEUE_RECIPES.md`](../../docs/AGENT_QUEUE_RECIPES.md) for paste
 
 ### 4. After the encode runs
 
-The user (or `run_queue.py`) writes a markdown report under `<videos>/.tmp/`:
+The user (or `run_queue.py`) writes a markdown report under `<videos>/logs/`:
 - `report_<YYYY-MM-DD_HH-MM-SS>.md` — only this run (one file per invocation)
 - `<queue_stem>_report.md` — incremental, accumulates jobs across every run
 
@@ -802,7 +802,7 @@ Set `done_dir` in a queue's `defaults` or per job (or `--done-dir` on `compress.
 - The output is moved FIRST, source SECOND — a step-2 failure leaves source intact + output in `done_dir`, recoverable.
 
 **Sidecar policy:**
-- `<stem>.quality.json` stays in `.tmp/` (downstream tooling looks there).
+- `<stem>.quality.json` stays in `logs/` (downstream tooling looks there).
 - `<stem>.preflight.json` is deleted (per-job artifact since v1.18.1 — the prior "content-keyed cache" rationale was scrapped because the dst-exists guard at the top of `encode_resumable.main` already short-circuits re-runs of the same source). The actual production cache sidecar lives next to the source (`<src>.<suffix>.preflight.json`) and is removed there by `delete_preflight_cache(src)` on the success path; this sidecar-dir cleanup is defensive parity for any caller that places one in `.tmp/`.
 - `<stem>.hooks.json` is deleted (per-job artifact, no value after the move).
 
@@ -881,7 +881,7 @@ Every successful encode generates a markdown report listing inputs, sizes, and g
 | Mode | Report path(s) | Contents |
 |---|---|---|
 | Single-file (`compress.py`) | `<output_dir>/<basename>.report.md` | One row, this file only |
-| Queue (`run_queue.py`) — **per-run** | `<queue_dir>/.tmp/report_<YYYY-MM-DD_HH_MM_SS>.md` | Only this run's jobs. Never overwritten — one file per `run_queue.py` invocation. |
+| Queue (`run_queue.py`) — **per-run** | `<queue_dir>/logs/report_<YYYY-MM-DD_HH_MM_SS>.md` (since v1.19.0; pre-v1.19.0 was `.tmp/`) | Only this run's jobs. Never overwritten — one file per `run_queue.py` invocation. |
 | Queue (`run_queue.py`) — **incremental** | `<queue_dir>/logs/<queue_basename>_report.md` (since v1.19.0; pre-v1.19.0 was `.tmp/`) | Accumulates every job from every run. Persistence is via a sidecar JSON (`<queue_basename>_report.history.json`) alongside the markdown. |
 
 The queue runner **passes `--no-report` to each per-job `compress.py` invocation**, so a queue run produces *only* the queue-level reports — no per-file noise in the output directory.

@@ -3,6 +3,69 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.19.1] — 2026-06-10
+
+Bug-fix batch from a full-application review (4 independent reviewer
+agents over the whole codebase, every finding verified before fixing).
+
+### Fixed
+- **CRITICAL: quarantined chunks could be spliced into the final video.**
+  The concat list was built from a broad `enc_*.mkv` glob, which also
+  matched the `enc_src_NNNN.broken-<stamp>.mkv` quarantine files left by
+  the verify-retry loop (their suffixes contain no `.part`, so the old
+  suffix check could not exclude them). On any quarantine→re-encode
+  retry, the corrupt copy was concatenated IN ADDITION to its healthy
+  replacement — silent output corruption. The list is now built from the
+  exact expected `enc_<src>.mkv` set.
+- **CRITICAL: DTS-collision auto-recovery never worked.** Leg 2 of the
+  MPEG-TS roundtrip wrote to a `*.dtsfix.tmp` temp name without an
+  explicit output format; ffmpeg cannot infer a muxer from `.tmp`, so the
+  leg failed on every file ("Unable to choose an output format") and the
+  recovery always fell through to the verify-failed diagnostic. Now
+  passes `-f matroska`. Both remux legs + the codec probe also gained
+  timeouts so a wedged ffmpeg can no longer hang the pipeline.
+- **Final concat output is now written atomically.** The merge muxes into
+  `<output>.concat-tmp` and is `os.replace`d onto the final name only
+  after ffmpeg exits 0. Previously a kill/reboot mid-concat left a
+  truncated output that the re-run's "Output already exists" short-circuit
+  mistook for a finished encode.
+- **`--auto-patch-source` silently dropped source protection of the
+  original file.** The source guard held a single path, and adopting a
+  patched copy re-pointed it. The guard now holds a set — the original
+  stays protected alongside the patched copy.
+- **Serial encoder deleted the partial output of a failed chunk.** The
+  `--parallel 1` no-guards path `unlink()`ed the `.part.mkv` on encode
+  failure; it is now quarantined (renamed aside) like every other failure
+  path, per the never-delete-encoded-chunks rule.
+- **`run_queue.py --status` had side effects.** The v1.19.0 one-shot log
+  migration ran before the `--status` early-exit, so merely inspecting a
+  queue physically moved legacy log files into `logs/`. Migration now
+  runs only on the encoding path.
+- **Malformed queue.json root mid-run killed the runner without a
+  summary.** A bad top-level type raised `SystemExit`, which escaped the
+  `except Exception` live-reload seams; it now raises `ValueError`, so a
+  mid-edit mistake degrades gracefully (warning + summary + aggregate
+  report) while startup stays fatal.
+- **`needs_fix.json` sidecar is now written atomically** (temp +
+  `os.replace`) so a kill mid-write can't leave a truncated contract file
+  for the chunk fixer.
+- **`cleanup()` (workdir rmtree) now carries its own source guard**
+  (defense-in-depth) instead of relying on the caller.
+
+### Added
+- ~75 new tests (581 → 608): concat-list exclusion + atomic-concat
+  semantics, DTS-remux muxer/timeout/rollback, serial-path quarantine,
+  `--status` read-only contract, queue reload resilience, plus first-ever
+  direct coverage of `source_guard`, the pre-flight auto-patch decision
+  tree, and `verify_output`'s structural layer (duration / codec /
+  resolution / audio-passthrough gates and the decode-walk short-circuit).
+
+### Changed
+- `tests/test_chunk_metrics_log.py` (596 lines) split in two to respect
+  the 500-line cap; stale docstrings/help-text still claiming the
+  pre-v1.19.0 `.tmp/` log locations swept to `logs/` (README, SKILL.md,
+  `--log-chunk-metrics` help, reporting/job_runner docstrings).
+
 ## [1.19.0] — 2026-06-09
 
 ### Changed

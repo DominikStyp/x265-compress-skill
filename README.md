@@ -38,7 +38,7 @@ scripts run standalone from any shell.
 - **Per-chunk metrics log (since v1.18.0)** — persists every chunk's encode
   time, source duration, output bytes, derived bitrate, plus VMAF +
   decision (`ok` / `warmup-grace` / `abort` / `infra-fail`) when the
-  quality guard is on. JSONL at `.tmp/<basename>.chunk_metrics.jsonl` (one
+  quality guard is on. JSONL at `logs/<basename>.chunk_metrics.jsonl` (one
   self-contained line per chunk event, kill-safe per line). A per-file
   rollup (total/mean/min/max for elapsed + bitrate + vmaf) is folded into
   the existing `.quality.json` sidecar under `encode` and mirrored into
