@@ -186,7 +186,7 @@ they start in a folder.
 
 | Data | Location |
 |---|---|
-| Encoder script (`.bat` / `.sh`) | `<video_folder>/.tmp/compress_<name>.bat` |
+| Encoder script (`.bat` / `.sh`) | `<video_folder>/.tmp/compress_<name>.bat` — any `%` in the source name becomes `_pct_` in the script filename (since v1.19.2; cmd.exe would otherwise expand `%VAR%` when the queue `call`s the path) |
 | Chunked workdir | `<video_folder>/.tmp/.compress_<name>/` |
 | Pre-flight scan cache | `<video_folder>/logs/<source>.preflight.json` (removed on successful encode since v1.18.1; kept across aborts so retries skip the scan) |
 | Quality scores sidecar | `<video_folder>/logs/<output>.quality.json` |

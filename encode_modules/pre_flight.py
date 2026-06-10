@@ -23,11 +23,11 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import time
 from pathlib import Path
 from typing import Optional
 
+from .probes import probe_duration
 from .verify import _run_decode_walk
 
 
@@ -35,27 +35,6 @@ from .verify import _run_decode_walk
 # only on file size+mtime) are invalidated and the source is re-scanned with
 # the new logic. v2: dup-DTS-only windows are no longer counted as failures.
 _SCAN_VERSION = 2
-
-
-def _probe_duration(src: Path) -> float:
-    """Local copy to avoid a circular probes <-> pre_flight import dependency.
-    Generous timeout so a wedged ffprobe on a corrupt source can't hang the
-    pre-flight scan indefinitely (subprocess-discipline invariant)."""
-    try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "error", "-print_format", "json",
-             "-show_format", str(src)],
-            capture_output=True, text=True, encoding="utf-8",
-            timeout=120,
-        )
-    except subprocess.TimeoutExpired:
-        return 0.0
-    if r.returncode != 0:
-        return 0.0
-    try:
-        return float(json.loads(r.stdout)["format"].get("duration", 0) or 0)
-    except Exception:
-        return 0.0
 
 
 def _cache_path_for(src: Path) -> Path:
@@ -196,7 +175,7 @@ def pre_flight_scan(src: Path, *, seg_sec: int = 60,
             return {**cached, "cache_hit": True}
 
     overall_start = time.monotonic()
-    src_dur = _probe_duration(src)
+    src_dur = probe_duration(src)
     if src_dur <= 0:
         # Can't probe duration → can't walk windows → assume bad.
         result = {

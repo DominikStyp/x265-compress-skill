@@ -31,6 +31,9 @@ import sys
 import time
 from pathlib import Path
 
+from encode_modules.probes import probe_duration_or_none
+from video_metrics import bits_per_pixel, video_stream_metrics
+
 # Schema version. Bump when fields are added/removed/semantically changed so
 # downstream analysis can branch on it.
 SCHEMA_VERSION = 1
@@ -157,26 +160,24 @@ def build_input_block(src_path: Path, probe_json: dict | None) -> dict:
     if video is None:
         return block
 
-    width = video.get("width")
-    height = video.get("height")
-    block["codec"] = video.get("codec_name")
+    # Delegate the width/height/codec/pix_fmt/fps extraction to the shared
+    # video_metrics helper so this fps/BPP derivation can't drift from
+    # compress_modules.probe.analyse. Only r_frame_rate is consulted (no
+    # avg_frame_rate fallback) to preserve this block's pre-consolidation
+    # behaviour.
+    metrics = video_stream_metrics(probe_json)
+    width = metrics["width"]
+    height = metrics["height"]
+    block["codec"] = metrics["codec_name"]
     block["width"] = width
     block["height"] = height
     block["resolution"] = (f"{width}x{height}"
                            if width is not None and height is not None else None)
-    block["pix_fmt"] = video.get("pix_fmt")
-    block["fps"] = video.get("r_frame_rate")
+    block["pix_fmt"] = metrics["pix_fmt"]
+    block["fps"] = metrics["r_frame_rate"]
 
     # Decimal fps for analyses that want a number rather than a fraction string.
-    fps_decimal = None
-    rfr = video.get("r_frame_rate") or ""
-    if "/" in rfr:
-        num, den = rfr.split("/", 1)
-        try:
-            n, d = float(num), float(den)
-            fps_decimal = n / d if d else None
-        except ValueError:
-            pass
+    fps_decimal = metrics["fps_decimal"]
     block["fps_decimal"] = fps_decimal
 
     bitrate = video.get("bit_rate")
@@ -186,13 +187,10 @@ def build_input_block(src_path: Path, probe_json: dict | None) -> dict:
         block["bitrate_bps"] = None
 
     # Bits per pixel — the single most predictive metric for the CRF/VMAF
-    # tradeoff. Derived here so every record carries it ready-to-correlate.
-    if (block.get("bitrate_bps") and width and height and fps_decimal
-            and fps_decimal > 0):
-        block["bpp"] = round(
-            block["bitrate_bps"] / (width * height * fps_decimal), 6)
-    else:
-        block["bpp"] = None
+    # tradeoff. Derived here (rounded to 6 dp) so every record carries it
+    # ready-to-correlate.
+    block["bpp"] = bits_per_pixel(
+        block.get("bitrate_bps"), width, height, fps_decimal, ndigits=6)
 
     return block
 
@@ -213,25 +211,12 @@ def build_chunk_records(workdir: Path,
     out: list[dict] = []
     for idx, chunk in enumerate(chunks):
         enc = workdir / f"enc_{chunk.stem}.mkv"
-        src_dur: float | None = None
         # Cheap probe: ffprobe each chunk's duration. For 10-chunk encodes
         # this is ~3 s total — negligible against multi-hour encode times.
-        # A deliberate local probe (not probes.probe_duration): this records
-        # None — not 0.0 — on failure so speed_factor is omitted rather than
-        # divided by a bogus zero, and uses a short per-chunk timeout since
-        # it runs in a loop.
-        try:
-            r = subprocess.run(
-                ["ffprobe", "-v", "error", "-print_format", "json",
-                 "-show_format", str(chunk)],
-                capture_output=True, text=True, encoding="utf-8", timeout=10,
-            )
-            if r.returncode == 0:
-                data = json.loads(r.stdout)
-                d = data.get("format", {}).get("duration")
-                src_dur = float(d) if d is not None else None
-        except Exception:
-            pass
+        # probe_duration_or_none (NOT probe_duration) so a failed probe records
+        # None — not 0.0 — and speed_factor is omitted rather than divided by a
+        # bogus zero. Short per-chunk timeout since it runs in a loop.
+        src_dur = probe_duration_or_none(chunk, timeout_s=10)
 
         elapsed = elapsed_by_chunk.get(chunk.name)
         rec: dict = {

@@ -18,6 +18,31 @@ from .x265_params import BASE_X265_PARAMS
 SCRIPT_EXTENSION = ".bat" if IS_WINDOWS else ".sh"
 
 
+def script_filename_for(source_path: Path, ext: str) -> str:
+    """The generated encoder script's filename: ``compress_<stem><ext>``,
+    with any ``%`` in the stem replaced by ``_pct_``.
+
+    Single source of truth for the script *filename* (the script *path* is
+    built from this in `_resolve_output_paths`; the queue side reads the path
+    back out of compress.py's JSON, so both ends use one formula).
+
+    Why sanitize ``%``: the queue runner launches the script via
+    ``subprocess.call(["cmd.exe", "/c", "call", script_path], ...)``. cmd.exe
+    re-parses that command line and EXPANDS ``%VAR%`` inside ``script_path`` —
+    so a source named ``50%PATH%off.mkv`` would make cmd look for a different,
+    non-existent file (and `%PATH%` is gone). The script CONTENTS are already
+    ``%``-escaped (`_cmd_set_escape`); the FILENAME is the uncovered sink.
+
+    The replacement is deterministic and applied identically for ``.bat`` and
+    ``.sh`` so a workdir resumed on a different OS still finds the same name.
+    Collisions are tolerable (two stems differing only in ``%`` vs ``_pct_``
+    is astronomically rare and no worse than the pre-existing same-stem
+    workdir collision). Sources without ``%`` are byte-identical to the old
+    ``f"compress_{stem}{ext}"`` formula — zero churn for the normal case."""
+    safe_stem = source_path.stem.replace("%", "_pct_")
+    return f"compress_{safe_stem}{ext}"
+
+
 def compress_workdir(tmp_dir: Path, source_path: Path) -> Path:
     """The encoder's per-source working directory: ``<tmp_dir>/.compress_<stem>``.
 
@@ -183,7 +208,10 @@ def _resolve_output_paths(source_path: Path) -> tuple[Path, Path, str]:
     # If source is already .mkv, suffix with .x265 to avoid overwriting.
     out_name = f"{base}.x265.mkv" if source_path.suffix.lower() == ".mkv" else f"{base}.mkv"
     output_path = source_dir / out_name
-    script_path = tmp_dir / f"compress_{base}{SCRIPT_EXTENSION}"
+    # Route through the shared helper so the script filename's `%`-sanitization
+    # (cmd.exe re-expands `%VAR%` in the path it's `call`ed with) lives in one
+    # place the queue side can also reference.
+    script_path = tmp_dir / script_filename_for(source_path, SCRIPT_EXTENSION)
     return output_path, script_path, base
 
 

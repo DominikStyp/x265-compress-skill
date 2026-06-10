@@ -36,6 +36,7 @@ class CompressWorkdirTest(unittest.TestCase):
         from compress_modules import script_writer
         from compress_modules.plan import EncodePlan
         from compress_modules.probe import SourceInfo
+        from compress_modules.script_options import ScriptOptions
 
         info = SourceInfo(
             codec="h264", width=1920, height=1080, fps=24.0, pix_fmt="yuv420p",
@@ -59,11 +60,8 @@ class CompressWorkdirTest(unittest.TestCase):
                 s = render(
                     info, plan, source, Path("/skill"), tmp_dir,
                     tmp_dir, Path(td) / "clip.report.md",
-                    resumable=True, segment_seconds=60, parallel=1,
-                    max_output_bytes=None, max_size_percent=None,
-                    auto_fix_choke=False, no_pre_flight_scan=False,
-                    auto_patch_source=False, max_patch_seconds=10.0,
-                    no_report=False, no_pause=True,
+                    ScriptOptions(resumable=True, segment_seconds=60,
+                                  parallel=1, no_pause=True),
                 )
                 self.assertIn(".compress_clip", s)
                 self.assertIn(expected, s)

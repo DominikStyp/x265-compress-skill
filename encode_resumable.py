@@ -55,6 +55,7 @@ from encode_modules.pre_flight import delete_preflight_cache
 from encode_modules.preflight_decision import handle_preflight
 from encode_modules.probes import probe_duration, probe_full
 from platform_compat import enable_ansi, enable_utf8_io
+from video_metrics import video_stream_metrics
 from encode_modules.reporting import (
     measure_quality_and_write_sidecar,
     print_summary,
@@ -228,18 +229,13 @@ def main() -> int:
     # plumbing a shared SourceInfo through three modules. position_of is the
     # 1-based temporal index used to derive 0-based chunk_idx in the JSONL.
     _full = probe_full(encode_src) or {}
-    _video = next((s for s in (_full.get("streams") or [])
-                   if s.get("codec_type") == "video"), {}) or {}
-    _w = _video.get("width")
-    _h = _video.get("height")
-    _fps_str = _video.get("r_frame_rate") or ""
-    _fps_decimal: float | None = None
-    if "/" in _fps_str:
-        try:
-            _n, _d = _fps_str.split("/", 1)
-            _fps_decimal = (float(_n) / float(_d)) if float(_d) else None
-        except (TypeError, ValueError):
-            _fps_decimal = None
+    # Shared video-stream extraction — same derivation as history's JSONL
+    # block (r_frame_rate only, no avg_frame_rate fallback), so width/height/fps
+    # logged here can't drift from the input block of the same encode.
+    _metrics = video_stream_metrics(_full)
+    _w = _metrics["width"]
+    _h = _metrics["height"]
+    _fps_decimal = _metrics["fps_decimal"]
     # Sidecar lives in dst.parent/logs/ alongside .quality.json (NOT inside
     # `workdir`, which cleanup() wipes after a successful encode). v1.19.0
     # routes every per-encode artefact under logs/ — encode_modules.log_paths

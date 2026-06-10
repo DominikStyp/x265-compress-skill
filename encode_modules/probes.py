@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 from formatting import format_hms
 
@@ -33,22 +34,49 @@ def fmt_dur(seconds: float) -> str:
     return format_hms(seconds)
 
 
-def probe_duration(path: Path) -> float:
-    """Container-level duration in seconds, 0.0 on failure (incl. timeout)."""
+def probe_duration_or_none(path: Path, *,
+                           timeout_s: int = _PROBE_TIMEOUT_S) -> Optional[float]:
+    """Container-level duration in seconds, or None on ANY probe failure
+    (timeout, non-zero exit, unparseable / missing duration).
+
+    This is the single ffprobe-duration subprocess site for the whole package:
+    ``probe_duration`` below is just the None→0.0 adapter. Callers that want to
+    *distinguish* "probe failed" from a genuine zero-length duration (e.g.
+    history.build_chunk_records, which omits speed_factor rather than dividing
+    by a bogus 0.0) use this directly; callers that just want a number with a
+    safe default use ``probe_duration``.
+    """
     try:
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", str(path)],
             capture_output=True, text=True, encoding="utf-8",
-            timeout=_PROBE_TIMEOUT_S,
+            timeout=timeout_s,
         )
     except subprocess.TimeoutExpired:
-        return 0.0
+        return None
     if r.returncode != 0:
-        return 0.0
+        return None
     try:
-        return float(json.loads(r.stdout)["format"].get("duration", 0) or 0)
+        d = json.loads(r.stdout)["format"].get("duration")
     except Exception:
-        return 0.0
+        return None
+    if d is None:
+        return None
+    try:
+        return float(d)
+    except (TypeError, ValueError):
+        return None
+
+
+def probe_duration(path: Path, *, timeout_s: int = _PROBE_TIMEOUT_S) -> float:
+    """Container-level duration in seconds, 0.0 on failure (incl. timeout).
+
+    Thin 0.0-on-failure adapter over :func:`probe_duration_or_none` — preserves
+    the historical contract for callers (chunking / encoder ETA math) that want
+    a plain number and treat a failed probe as 0.0.
+    """
+    dur = probe_duration_or_none(path, timeout_s=timeout_s)
+    return dur if dur is not None else 0.0
 
 
 def probe_full(path: Path) -> dict | None:

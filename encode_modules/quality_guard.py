@@ -52,11 +52,13 @@ Design choices:
 """
 from __future__ import annotations
 
+import inspect
 import queue
+import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 
 # Public sentinel: an abort decision packaged with everything the encoder
@@ -76,9 +78,16 @@ class QualityAbortInfo:
 # Type alias for the injected libvmaf runner. Returns a dict with at least
 # ``vmaf_mean`` on success, ``None`` on any failure (subprocess error, log
 # parse failure, timeout). Tests pass a fake; production passes
-# ``encode_modules.quality.vmaf_pair`` (a thin wrapper around
+# ``encode_modules.quality_libvmaf.vmaf_pair`` (a thin wrapper around
 # ``_quality_check_run`` with low_priority=False).
-VmafPairFn = Callable[[Path, Path], Optional[dict]]
+#
+# The runner MAY accept a ``register_proc`` keyword: a callback the guard
+# passes so the runner can publish its in-flight ffmpeg child (``proc``) and
+# clear it (``None``) on reap. The guard uses this to terminate a mid-flight
+# pass on a timed-out ``stop()`` instead of leaking it. Runners with the bare
+# ``(src, dst)`` signature still work — they just can't be reaped on a timeout.
+# ``...`` for the parameters keeps the keyword-bearing form type-compatible.
+VmafPairFn = Callable[..., Optional[dict]]
 
 
 # How many consecutive `vmaf_pair_fn` -> None returns before the guard
@@ -113,6 +122,13 @@ def _NOOP_METRICS_UPDATE(**_kwargs) -> None:
 _WorkItem = Optional[tuple[int, Path, Path]]
 
 
+# Grace given to the in-flight VMAF ffmpeg to die from terminate() before
+# stop() escalates to kill(), on the timed-out-join teardown path. Short
+# because by this point the encode is being torn down and we don't want to
+# block shutdown on a wedged child.
+_INFLIGHT_TERMINATE_GRACE_S = 3.0
+
+
 class QualityGuard:
     """Per-chunk VMAF guard. Constructed once per file; ``submit()``-ed once
     per finalized encoded chunk; ``stop()``-ed when the encode loop exits.
@@ -142,6 +158,18 @@ class QualityGuard:
         # _CONSECUTIVE_INFRA_FAILS_BEFORE_ABORT we treat libvmaf as broken
         # and fire a loud abort so the encoder doesn't silently disable.
         self._consecutive_infra_fails = 0
+        # Currently-running VMAF subprocess, tracked so stop() can reap it on
+        # a timed-out join. The worker's vmaf_pair_fn runs ffmpeg WITHOUT the
+        # display's lifetime Job Object / process group (low_priority=False),
+        # so nothing else terminates it if the join elapses mid-pass. Guarded
+        # by _proc_lock; the worker registers on spawn and clears on reap, and
+        # stop() reads it to terminate -> kill. None when no pass is in flight.
+        self._proc_lock = threading.Lock()
+        self._inflight_proc: Optional[Any] = None
+        # vmaf_pair_fn is only handed the register_proc seam if it accepts it;
+        # legacy fakes / callables with the bare (src, dst) signature keep
+        # working unchanged (they just can't be reaped on a timed-out stop).
+        self._vmaf_fn_takes_register = self._fn_accepts_register(vmaf_pair_fn)
 
         if threshold is None:
             # Disabled mode: no worker, no queue. submit/stop become no-ops.
@@ -166,7 +194,15 @@ class QualityGuard:
     def stop(self, timeout: float = 60.0) -> None:
         """Signal the worker to drain pending items and exit. Joins the
         worker thread with the given timeout. Idempotent — second call is
-        a quick no-op."""
+        a quick no-op.
+
+        If the join times out with a VMAF pass still in flight, the worker is
+        blocked in ffmpeg's read loop and its ffmpeg child — spawned outside
+        the display's lifetime Job Object / process group — would leak past
+        teardown. So on a timed-out join we terminate -> short-wait -> kill the
+        tracked in-flight subprocess, then re-join briefly so the freed worker
+        can unwind its own ``finally`` (which clears the slot + unlinks the log
+        in quality_libvmaf)."""
         if self._worker is None or self._stopped.is_set():
             self._stopped.set()
             return
@@ -175,6 +211,36 @@ class QualityGuard:
         # cleanly even if the queue is empty.
         self._work_q.put(None)
         self._worker.join(timeout=timeout)
+        if self._worker.is_alive():
+            # Join elapsed: a VMAF pass is mid-flight (or the worker is wedged).
+            # Reap the in-flight ffmpeg so it doesn't outlive teardown.
+            self._terminate_inflight_proc()
+            # Give the unblocked worker a brief window to run its finally and
+            # return; keep it short so shutdown isn't held hostage by a wedge.
+            self._worker.join(timeout=_INFLIGHT_TERMINATE_GRACE_S)
+
+    def _terminate_inflight_proc(self) -> None:
+        """terminate() -> short wait -> kill() the currently-registered VMAF
+        subprocess, if any. Snapshots the proc under the lock (the worker may
+        clear the slot concurrently as it reaps); operating on the snapshot is
+        safe because terminate()/kill() on an already-dead proc is a benign
+        no-op. Catches only the specific proc-lifecycle exceptions so a real
+        bug still surfaces."""
+        with self._proc_lock:
+            proc = self._inflight_proc
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=_INFLIGHT_TERMINATE_GRACE_S)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        except (OSError, ValueError):
+            # OSError: handle/pid race (proc already gone). ValueError: Popen
+            # in an odd state. Either way the child is not ours to reap now.
+            pass
 
     def has_aborted(self) -> bool:
         """True iff a chunk has failed the threshold and ``on_abort`` has
@@ -226,7 +292,7 @@ class QualityGuard:
         # only started when threshold is set.
         assert self._threshold is not None
 
-        scores = self._vmaf_pair_fn(src, dst)
+        scores = self._call_vmaf_pair_fn(src, dst)
         if scores is None or scores.get("vmaf_mean") is None:
             self._consecutive_infra_fails += 1
             reason = ("libvmaf returned no scores" if scores is None
@@ -295,6 +361,41 @@ class QualityGuard:
         self._events.put(
             f"  . quality guard: chunk {chunk_idx + 1} ({src.name}) "
             f"VMAF={vmaf_mean:.2f} >= {self._threshold:g} ok")
+
+    def _call_vmaf_pair_fn(self, src: Path, dst: Path) -> Optional[dict]:
+        """Invoke the injected VMAF runner. When it accepts a ``register_proc``
+        keyword, hand it ``self._register_proc`` so the runner can publish its
+        in-flight ffmpeg child (and clear it on reap) — that's what lets a
+        timed-out ``stop()`` terminate the pass instead of leaking it. Runners
+        with the bare ``(src, dst)`` signature are called as before."""
+        if self._vmaf_fn_takes_register:
+            return self._vmaf_pair_fn(src, dst,  # type: ignore[call-arg]
+                                      register_proc=self._register_proc)
+        return self._vmaf_pair_fn(src, dst)
+
+    def _register_proc(self, proc: Optional[Any]) -> None:
+        """Worker-side seam: record the VMAF subprocess currently running (or
+        ``None`` once it has been reaped) under the proc lock, so a concurrent
+        ``stop()`` sees a consistent snapshot. Called by the injected runner
+        right after Popen and again in its ``finally``."""
+        with self._proc_lock:
+            self._inflight_proc = proc
+
+    @staticmethod
+    def _fn_accepts_register(fn: VmafPairFn) -> bool:
+        """True iff ``fn`` accepts a ``register_proc`` keyword (or **kwargs).
+        Probed once at construction so the per-chunk hot path stays a plain
+        call. A non-introspectable callable (e.g. a builtin) is treated as
+        not accepting it — the worst case is the legacy no-reap behaviour."""
+        try:
+            sig = inspect.signature(fn)
+        except (TypeError, ValueError):
+            return False
+        params = sig.parameters
+        if "register_proc" in params:
+            return True
+        return any(p.kind is inspect.Parameter.VAR_KEYWORD
+                   for p in params.values())
 
     def _emit_metrics_update(self, *, chunk_name: str,
                              vmaf_mean: Optional[float],

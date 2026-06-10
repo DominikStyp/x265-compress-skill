@@ -56,14 +56,17 @@ class RunDecodeWalkNonDtsCount(unittest.TestCase):
 class PreFlightDtsCarveOut(unittest.TestCase):
     def setUp(self) -> None:
         self._orig_walk = pre_flight._run_decode_walk
-        self._orig_probe = pre_flight._probe_duration
+        # pre_flight no longer has its own _probe_duration — it imports the
+        # canonical probes.probe_duration into its namespace (DRY consolidation).
+        # Patch that bound name to stub the source duration.
+        self._orig_probe = pre_flight.probe_duration
         self._orig_write = pre_flight._write_cache
-        pre_flight._probe_duration = lambda src: 120.0   # 2 windows @ 60s
+        pre_flight.probe_duration = lambda src: 120.0   # 2 windows @ 60s
         pre_flight._write_cache = lambda src, result: None
 
     def tearDown(self) -> None:
         pre_flight._run_decode_walk = self._orig_walk
-        pre_flight._probe_duration = self._orig_probe
+        pre_flight.probe_duration = self._orig_probe
         pre_flight._write_cache = self._orig_write
 
     def _walk_returning(self, **fields):

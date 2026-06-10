@@ -34,6 +34,25 @@ class ProbesTimeoutTest(unittest.TestCase):
         with mock.patch.object(probes.subprocess, "run", side_effect=_timeout):
             self.assertEqual(probes.probe_duration(Path("x.mkv")), 0.0)
 
+    def test_probe_duration_or_none_degrades_on_timeout(self) -> None:
+        # The consolidated single subprocess site: None on timeout (probe_duration
+        # is just its 0.0-on-failure adapter).
+        with mock.patch.object(probes.subprocess, "run", side_effect=_timeout):
+            self.assertIsNone(probes.probe_duration_or_none(Path("x.mkv")))
+
+    def test_probe_duration_or_none_honours_timeout_kwarg(self) -> None:
+        spy = mock.MagicMock(side_effect=_ok_run)
+        with mock.patch.object(probes.subprocess, "run", spy):
+            probes.probe_duration_or_none(Path("x.mkv"), timeout_s=10)
+        self.assertEqual(spy.call_args.kwargs.get("timeout"), 10)
+
+    def test_probe_duration_forwards_timeout_kwarg(self) -> None:
+        # probe_duration must thread timeout_s through to the single site.
+        spy = mock.MagicMock(side_effect=_ok_run)
+        with mock.patch.object(probes.subprocess, "run", spy):
+            probes.probe_duration(Path("x.mkv"), timeout_s=7)
+        self.assertEqual(spy.call_args.kwargs.get("timeout"), 7)
+
     def test_probe_full_degrades_on_timeout(self) -> None:
         with mock.patch.object(probes.subprocess, "run", side_effect=_timeout):
             self.assertIsNone(probes.probe_full(Path("x.mkv")))
@@ -89,6 +108,12 @@ class AllSitesPassATimeoutTest(unittest.TestCase):
 
     def _assert_timeout(self, spy) -> None:
         self.assertIsNotNone(spy.call_args.kwargs.get("timeout"))
+
+    def test_probe_duration_or_none(self) -> None:
+        spy = self._spy('{"format":{"duration":"10.0"}}')
+        with mock.patch.object(probes.subprocess, "run", spy):
+            probes.probe_duration_or_none(Path("x.mkv"))
+        self._assert_timeout(spy)
 
     def test_probe_full(self) -> None:
         spy = self._spy("{}")

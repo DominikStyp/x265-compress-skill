@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from compress_modules import script_writer  # noqa: E402
 from compress_modules.plan import EncodePlan  # noqa: E402
 from compress_modules.probe import SourceInfo  # noqa: E402
+from compress_modules.script_options import ScriptOptions  # noqa: E402
 
 # Distinct `%`-bearing markers for source vs output so each sink is pinned.
 SRC_STEM = "70% Hell"
@@ -57,10 +58,8 @@ def _render(fn, td: str, *, resumable: bool) -> str:
     return fn(
         _info(), _plan(td), Path(f"/src/{SRC_STEM}.mp4"), Path("/skill"),
         Path(td), Path(td), Path(td) / f"{OUT_STEM}.report.md",
-        resumable=resumable, segment_seconds=60, parallel=1,
-        max_output_bytes=None, max_size_percent=None, auto_fix_choke=False,
-        no_pre_flight_scan=False, auto_patch_source=False,
-        max_patch_seconds=10.0, no_report=False, no_pause=True,
+        ScriptOptions(resumable=resumable, segment_seconds=60, parallel=1,
+                      no_pause=True),
     )
 
 
@@ -115,11 +114,8 @@ class WindowsPercentEscapeTest(unittest.TestCase):
             s = script_writer._render_windows_script(
                 _info(), _plan(td), Path(f"/src/{SRC_STEM}.mp4"), Path("/skill"),
                 Path(td), Path(td), Path(td) / f"{OUT_STEM}.report.md",
-                resumable=True, segment_seconds=60, parallel=1,
-                max_output_bytes=None, max_size_percent=None,
-                auto_fix_choke=False, no_pre_flight_scan=False,
-                auto_patch_source=False, max_patch_seconds=10.0,
-                no_report=False, no_pause=True, on_chunk_done=["notify"],
+                ScriptOptions(resumable=True, segment_seconds=60, parallel=1,
+                              no_pause=True, on_chunk_done=["notify"]),
             )
         hooks_line = next(ln for ln in s.splitlines()
                           if ln.startswith('set "_SKILL_HOOKS='))

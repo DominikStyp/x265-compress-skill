@@ -142,7 +142,10 @@ def _quality_check_run(src: Path, dst: Path, *,
                       duration: float | None = None,
                       on_progress: Optional[Callable[[float, str, str], None]]
                       = None,
-                      low_priority: bool = True) -> dict | None:
+                      low_priority: bool = True,
+                      register_proc: Optional[
+                          Callable[[Optional[subprocess.Popen]], None]]
+                      = None) -> dict | None:
     """One ffmpeg+libvmaf invocation comparing `src` vs `dst`. Shared by
     full-file mode (no seek_start/duration) and segment-sampling mode (both
     set). The fps normalization that makes scores honest on concat'd outputs
@@ -157,7 +160,14 @@ def _quality_check_run(src: Path, dst: Path, *,
     IDLE_PRIORITY_CLASS to match the rest of the encoder. The per-chunk
     QualityGuard (encode_modules.quality_guard) passes False because the
     quality check should preempt the encoder — until a chunk is judged, the
-    encoder doesn't know whether to keep spending CPU on its file."""
+    encoder doesn't know whether to keep spending CPU on its file.
+
+    `register_proc`, when supplied, is called with the live Popen right after
+    spawn and with None in the finally once the child is reaped. The
+    QualityGuard injects it so a timed-out `stop()` can terminate a mid-flight
+    pass — this ffmpeg runs outside the encoder's lifetime Job Object /
+    process group (low_priority=False), so nothing else would reap it if the
+    guard's worker is still blocked in the read loop at teardown."""
     log_path = Path(tempfile.gettempdir()) / f"vmaf_{_os.getpid()}_{int(time.time()*1000000)}.json"
     libvmaf_node = _libvmaf_node_for(log_path, subsample)
     cmd = _build_libvmaf_cmd(
@@ -186,6 +196,11 @@ def _quality_check_run(src: Path, dst: Path, *,
             text=True, encoding="utf-8", errors="replace",
             **popen_kwargs,
         )
+        # Publish the live child so a caller (the QualityGuard) can terminate
+        # it on a timed-out stop(). Done immediately after spawn — before the
+        # multi-minute read loop — so the proc is reapable for its whole life.
+        if register_proc is not None:
+            register_proc(proc)
 
         def _tick(state: "dict[str, str]") -> None:
             if on_progress is None:
@@ -208,6 +223,11 @@ def _quality_check_run(src: Path, dst: Path, *,
     except Exception:
         return None
     finally:
+        # Clear the guard's in-flight slot first: from here on we own teardown
+        # of this proc, so the guard must not also try to terminate it (avoids
+        # a double-reap race on the same Popen across the two threads).
+        if register_proc is not None:
+            register_proc(None)
         # Never leak the ffmpeg+libvmaf child. Unlike subprocess.run, a Popen
         # is not reaped when the read loop raises (decode error mid-stream) or
         # the user Ctrl-Cs during a multi-minute pass — terminate it before
@@ -229,7 +249,10 @@ def _quality_check_run(src: Path, dst: Path, *,
             pass
 
 
-def vmaf_pair(src: Path, dst: Path, *, subsample: int = 10) -> dict | None:
+def vmaf_pair(src: Path, dst: Path, *, subsample: int = 10,
+             register_proc: Optional[
+                 Callable[[Optional[subprocess.Popen]], None]] = None,
+             ) -> dict | None:
     """Public single-pair libvmaf comparator: runs `src` vs `dst` end-to-end
     at NORMAL CPU priority (no `nice -n 19` wrap) and returns a dict with
     vmaf_mean / vmaf_min / vmaf_harmonic_mean / psnr_mean / ssim_mean — or
@@ -238,5 +261,11 @@ def vmaf_pair(src: Path, dst: Path, *, subsample: int = 10) -> dict | None:
     This is the entry point that ``encode_modules.quality_guard.QualityGuard``
     wires up for per-chunk threshold checks: the guard runs in parallel with
     the next chunk's encode, and the quality check must preempt the encoder
-    so abort decisions land before the encoder wastes more CPU."""
-    return _quality_check_run(src, dst, subsample=subsample, low_priority=False)
+    so abort decisions land before the encoder wastes more CPU.
+
+    ``register_proc`` is forwarded to ``_quality_check_run`` so the guard can
+    terminate this ffmpeg on a timed-out ``stop()`` (it runs outside the
+    encoder's lifetime group, so nothing else reaps it). Accepting the keyword
+    is also what makes the guard pass it — see ``QualityGuard._fn_accepts_register``."""
+    return _quality_check_run(src, dst, subsample=subsample, low_priority=False,
+                              register_proc=register_proc)

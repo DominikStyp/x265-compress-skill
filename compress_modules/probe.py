@@ -12,6 +12,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from video_metrics import parse_fps_fraction, video_stream_metrics
+
 
 @dataclass
 class SourceInfo:
@@ -62,13 +64,24 @@ def run_ffprobe(path: Path) -> dict:
 
 def parse_fps(r_frame_rate: str) -> float:
     """ffprobe emits fps as a rational like "30000/1001" or "25/1". Reduce to
-    float; return 0.0 on any parse failure."""
-    try:
-        num, den = r_frame_rate.split("/")
-        den_f = float(den)
-        return float(num) / den_f if den_f else 0.0
-    except Exception:
+    float; return 0.0 on any parse failure.
+
+    Backward-compatible wrapper over the shared ``video_metrics``
+    derivation: that helper returns ``Optional[float]`` (None on failure),
+    which we map to the planner's historical 0.0 sentinel so existing callers
+    (BPP/CRF math that multiplies by fps) are unaffected. Kept here as a public
+    name because tests and downstream code import ``compress_modules.probe.
+    parse_fps`` directly.
+
+    One behaviour the shared helper *adds* — parsing a slash-less numeric
+    string like "30" — is intentionally NOT exposed here: the old planner
+    required a rational and returned 0.0 for a bare number, so we keep that
+    exact contract (ffprobe's ``r_frame_rate`` is always ``n/d`` anyway, so
+    this branch is unreachable in real use)."""
+    if r_frame_rate is None or "/" not in r_frame_rate:
         return 0.0
+    fps = parse_fps_fraction(r_frame_rate)
+    return fps if fps is not None else 0.0
 
 
 def bit_depth_from_pix_fmt(pix_fmt: str) -> int:
@@ -128,10 +141,17 @@ def analyse(path: Path) -> SourceInfo:
         if s.get("codec_type") == "audio"
     ]
 
-    width = int(video.get("width", 0))
-    height = int(video.get("height", 0))
-    fps = parse_fps(video.get("r_frame_rate", "0/1"))
-    pix_fmt = video.get("pix_fmt", "yuv420p")
+    # Shared video-stream extraction (single source of truth with history's
+    # JSONL block). The planner keeps its own int-casts + non-None defaults
+    # below so the SourceInfo contract (ints, "yuv420p" fallback, 0.0 fps
+    # sentinel) is unchanged; only the derivation logic is now shared.
+    metrics = video_stream_metrics(data)
+    width = int(metrics["width"] or 0)
+    height = int(metrics["height"] or 0)
+    # parse_fps maps the shared helper's None → 0.0, matching the planner's
+    # historical sentinel (and the old "0/1" default for a missing rate).
+    fps = parse_fps(metrics["r_frame_rate"] or "0/1")
+    pix_fmt = metrics["pix_fmt"] or "yuv420p"
     bit_depth = bit_depth_from_pix_fmt(pix_fmt)
 
     color_primaries = video.get("color_primaries")

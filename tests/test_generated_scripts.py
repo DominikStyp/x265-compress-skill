@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from compress_modules import script_writer  # noqa: E402
 from compress_modules.plan import EncodePlan  # noqa: E402
 from compress_modules.probe import SourceInfo  # noqa: E402
+from compress_modules.script_options import ScriptOptions  # noqa: E402
 from encode_modules.hook_config import load_hook_sidecar  # noqa: E402
 
 
@@ -41,14 +42,13 @@ def _plan() -> EncodePlan:
 
 def _render(fn, *, resumable: bool, no_pause: bool) -> str:
     # v1.19.0 signature: tmp_dir (chunked-workdir parent) + sidecar_dir
-    # (logs/) + report_md_path are now passed independently.
+    # (logs/) + report_md_path are passed independently. The encode-behaviour
+    # flags now ride in a single ScriptOptions (post-ScriptOptions refactor).
     return fn(
         _info(), _plan(), Path("/tmp/in.mp4"), Path("/skill"),
         Path("/tmp/.tmp"), Path("/tmp/logs"), Path("/tmp/logs/out.report.md"),
-        resumable=resumable, segment_seconds=60, parallel=1,
-        max_output_bytes=None, max_size_percent=None, auto_fix_choke=False,
-        no_pre_flight_scan=False, auto_patch_source=False,
-        max_patch_seconds=10.0, no_report=False, no_pause=no_pause,
+        ScriptOptions(resumable=resumable, segment_seconds=60, parallel=1,
+                      no_pause=no_pause),
     )
 
 
@@ -102,11 +102,8 @@ def _render_hooked(fn, tmp_dir, on_chunk_done):
     return fn(
         _info(), _plan(), Path("/tmp/in.mp4"), Path("/skill"),
         Path(tmp_dir), Path(tmp_dir), Path(tmp_dir) / "out.report.md",
-        resumable=True, segment_seconds=60, parallel=2,
-        max_output_bytes=None, max_size_percent=None, auto_fix_choke=False,
-        no_pre_flight_scan=False, auto_patch_source=False,
-        max_patch_seconds=10.0, no_report=False, no_pause=False,
-        on_chunk_done=on_chunk_done,
+        ScriptOptions(resumable=True, segment_seconds=60, parallel=2,
+                      no_pause=False, on_chunk_done=on_chunk_done),
     )
 
 

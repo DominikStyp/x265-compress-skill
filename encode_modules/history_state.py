@@ -20,6 +20,13 @@ seam — instantiate a fresh recorder per test instead of leaking globals).
 Idempotency: a `_history_written` flag prevents the synchronous flush at
 the end of `main()` AND the atexit hook from emitting two records for
 the same encode.
+
+Module layout: this file owns the in-memory record state (init / chunk
+timings / mark_status / finalize / flush) and the singleton + shims. The
+terminal-status hook-emission cluster (`fire_job_end_hook`,
+`fire_file_complete_hook`, `derive_stop_fields`, `stat_source_bytes`) lives
+in the sibling `history_hooks` module; `HistoryRecorder._fire_*_hook` are
+thin wrappers delegating there (split out to stay under the 500-line cap).
 """
 from __future__ import annotations
 
@@ -34,6 +41,10 @@ from .chunk_metrics_log import (
     build_summary_for_history_record as _build_chunk_metrics_summary,
 )
 from .file_complete_hook import FileCompleteHook
+from .history_hooks import (
+    fire_file_complete_hook as _fire_file_complete_hook_impl,
+    fire_job_end_hook as _fire_job_end_hook_impl,
+)
 from .job_end_hook import JobEndHook
 from .probes import probe_full
 
@@ -64,7 +75,7 @@ class HistoryRecorder:
         # exactly once, right after the JSONL record lands in flush().
         self._job_end_hook: JobEndHook | None = None
         # on_file_complete hook (optional). Success-only — fires from flush()
-        # BEFORE the job-end hook when status == "ok" AND output exists.
+        # AFTER the job-end hook, when status == "ok" AND output exists.
         self._file_complete_hook: FileCompleteHook | None = None
         # Static job-end context the encoder hands in alongside the hook.
         # Most fields are derivable from `self.current` after finalize, but
@@ -305,128 +316,31 @@ class HistoryRecorder:
                   file=sys.stderr)
 
     def _fire_job_end_hook(self) -> None:
-        """Build the per-job context from `self.current` + stored stop fields
-        and invoke the attached JobEndHook. No-op when no hook is attached.
-
-        Derives stop_reason/stop_detail from the JSONL record itself when the
-        threshold-abort path didn't pre-populate them (the common case for
-        chunk-failed, verify-failed, awaiting-chunk-fix, stopped-by-user) —
-        so every non-ok terminal status carries enough context for a
-        notification script to dispatch on."""
-        hook = self._job_end_hook
-        if hook is None or not hook.enabled or self.current is None:
+        """Thin wrapper: delegate job-end hook firing to
+        ``history_hooks.fire_job_end_hook``, passing the finalized record +
+        the stop-context this recorder stashed. Behaviour is unchanged; the
+        logic moved to ``history_hooks`` to keep this module under the cap."""
+        if self.current is None:
             return
-        rec = self.current
-        status = rec.get("status", "")
-        # Same field locations as the JSONL schema, kept as the single source
-        # of truth — the hook just surfaces them via env vars.
-        output = rec.get("output") or {}
-        reduction = rec.get("reduction") or {}
-        settings = rec.get("settings") or {}
-        # X265_OUTPUT must point at a real final file: empty on every status
-        # except "ok" so a notification script can use "X265_OUTPUT != ''" as
-        # "the encoded mkv is on disk". init() seeds output.path early, so we
-        # gate on status here, not on path presence.
-        output_path = output.get("path") if status == "ok" else None
-        out_bytes = output.get("size_bytes") if status == "ok" else None
-        stop_reason, stop_detail = self._derive_stop_fields(rec, status)
-        msg = hook.fire(
-            status=status,
-            stop_reason=stop_reason,
-            stop_detail=stop_detail,
-            crf=settings.get("crf"),
-            crf_retry_chain=self._crf_retry_chain or str(
-                settings.get("crf") or ""),
-            output=Path(str(output_path)) if output_path else None,
-            output_bytes_final=out_bytes,
-            # The user's original source is what the hook reports — NOT the
-            # auto-patched encode_src that the JSONL `input.size_bytes` holds
-            # (that field feeds the size-projection guard which needs the
-            # patched-size denominator). Same invariant as X265_SOURCE.
-            source_bytes=self._stat_source_bytes(hook),
+        _fire_job_end_hook_impl(
+            self.current, self._job_end_hook,
+            stop_reason_override=self._stop_reason,
+            stop_detail_override=self._stop_detail,
+            crf_retry_chain=self._crf_retry_chain,
             output_bytes_projected=self._output_bytes_projected,
             output_bytes_threshold=self._output_bytes_threshold,
-            wall_seconds=rec.get("wall_seconds"),
-            pct_saved=reduction.get("pct_saved"),
         )
-        if msg:
-            print(msg, file=sys.stderr)
-
-    def _derive_stop_fields(self, rec: dict, status: str) -> tuple[str, str]:
-        """Build (stop_reason, stop_detail) from the record when the
-        threshold-abort path didn't pre-populate them. `stop_reason` defaults
-        to the JSONL status (so chunk-failed → reason='chunk-failed');
-        `stop_detail` digs through the structured failure fields the encoder
-        stashed under mark_status(..., **extras). Empty on the ok path so a
-        notifier can detect "no problem" via stop_reason == ""."""
-        if status == "ok":
-            return "", ""
-        reason = self._stop_reason or status
-        if self._stop_detail:
-            return reason, self._stop_detail
-        # Best-effort detail digger — surface whichever structured field the
-        # encoder actually populated for this status class.
-        for key in ("abort_reason",):
-            value = rec.get(key)
-            if isinstance(value, str) and value:
-                return reason, value
-        for key in ("failed_chunks", "verify_problems", "skipped_chunks",
-                    "remaining_chunks"):
-            value = rec.get(key)
-            if isinstance(value, list) and value:
-                return reason, ", ".join(str(v) for v in value)
-            if isinstance(value, int):
-                return reason, f"{key}={value}"
-        return reason, ""
 
     def _fire_file_complete_hook(self) -> None:
-        """Fire on_file_complete from `self.current` + a fresh stat of the
-        output. Success-only by contract — the hook itself filters
-        status != "ok" or missing output, so this method just hands over
-        the data."""
-        hook = self._file_complete_hook
-        if hook is None or not hook.enabled or self.current is None:
+        """Thin wrapper: delegate file-complete hook firing to
+        ``history_hooks.fire_file_complete_hook``. Success-only by contract
+        (the impl + the hook both filter status != "ok")."""
+        if self.current is None:
             return
-        rec = self.current
-        status = rec.get("status", "")
-        if status != "ok":
-            return
-        output = rec.get("output") or {}
-        reduction = rec.get("reduction") or {}
-        settings = rec.get("settings") or {}
-        quality = rec.get("quality") or {}
-        output_path = output.get("path")
-        # Refuse to fire when the file isn't actually on disk — the contract
-        # is "ready for next step", not "we think we wrote it".
-        if not output_path or not Path(str(output_path)).exists():
-            return
-        msg = hook.fire(
-            status=status,
-            output=Path(str(output_path)),
-            output_bytes_final=output.get("size_bytes"),
-            source_bytes=self._stat_source_bytes(hook),
-            wall_seconds=rec.get("wall_seconds"),
-            pct_saved=reduction.get("pct_saved"),
-            crf=settings.get("crf"),
-            crf_retry_chain=self._crf_retry_chain or str(
-                settings.get("crf") or ""),
-            vmaf_mean=quality.get("vmaf_mean"),
+        _fire_file_complete_hook_impl(
+            self.current, self._file_complete_hook,
+            crf_retry_chain=self._crf_retry_chain,
         )
-        if msg:
-            print(msg, file=sys.stderr)
-
-    def _stat_source_bytes(self, hook) -> int | None:
-        """Return the user's original source size in bytes. Stats the path the
-        hook was bound to (the user's `src`, not the patched `encode_src`).
-        Returns None on stat failure — the hook then emits an empty
-        X265_SOURCE_BYTES rather than a stale or wrong value."""
-        try:
-            src = getattr(hook, "_source", None)
-            if src is None:
-                return None
-            return Path(str(src)).stat().st_size
-        except OSError:
-            return None
 
 
 # Singleton instance — one HistoryRecorder per process lifetime.

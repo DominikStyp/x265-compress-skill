@@ -3,6 +3,60 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.19.2] — 2026-06-10
+
+Implements every improvement proposal from the v1.19.1 full-application
+review: DRY consolidation, structural refactors, pre-emptive module
+splits, and the two remaining low-severity fixes. All refactors are
+behavior-preserving (generated scripts byte-identical); verified by two
+independent adversarial reviewers + 661 tests.
+
+### Fixed
+- **`%` in a source filename broke the queue's script launch.** The
+  generated script name (`compress_<stem>.bat`) carried the literal `%`,
+  and `cmd.exe /c call <path>` re-parses the path — a `%VAR%`-shaped run
+  in the name expanded, pointing cmd at the wrong/nonexistent file. Any
+  `%` in the source stem is now sanitized to `_pct_` in the script
+  FILENAME only (script contents and the `.compress_<stem>` workdir were
+  already correctly `%`-escaped and are unchanged; sources without `%`
+  produce byte-identical names).
+- **Quality-guard ffmpeg could outlive a timed-out teardown.** The
+  per-chunk VMAF guard's libvmaf ffmpeg runs outside the encoder's
+  lifetime Job Object / process group; if `stop(timeout=90)` elapsed
+  mid-pass, the child leaked. The guard now tracks its in-flight process
+  and, on a timed-out join, terminates it (terminate → 3 s grace → kill)
+  before re-joining.
+
+### Changed
+- **DRY consolidation of media probing.** New root `video_metrics.py` is
+  the single source of truth for fps-fraction parsing, video-stream
+  metric extraction, and bits-per-pixel; the three independent
+  derivations in `history.py`, `compress_modules/probe.py`, and
+  `encode_resumable.py` are now thin adapters with their exact legacy
+  semantics pinned by tests (incl. the `parse_fps` 0.0-sentinel
+  contract). `probes.probe_duration_or_none` is now the single ffprobe
+  duration subprocess site; the byte-for-byte copies in `pre_flight.py`
+  and `history.py` are gone.
+- **`ScriptOptions` dataclass.** `write_script`'s 17 encode-behaviour
+  flags are packed once into a frozen dataclass and passed as one object
+  through the render layers (public kwargs API unchanged; adding a flag
+  no longer means editing ~6 signatures).
+- **Pre-emptive module splits** — the five files sitting at 484-491
+  lines against the hard 500 cap now have headroom: `run_queue.py` →
+  `queue_modules/completion.py`; `chunk_metrics_log.py` →
+  `chunk_metrics_singleton.py`; `history_state.py` →
+  `history_hooks.py`; `script_writer.py` → `_substitutions.py` +
+  `script_options.py`. Pure moves; largest module is now 475 lines.
+
+### Added
+- 50 new tests (611 → 661): `video_metrics` edge cases + cross-module
+  fps drift pins, quality-guard stop-leak termination, `%`-filename
+  sanitization (write-side + queue-side agreement, workdir intentionally
+  unsanitized), and first-ever characterization coverage of the
+  single-pass (`resumable=False`) `.bat`/`.sh` generation — ffmpeg
+  invocation, exit-code capture before `pause`, report plumbing,
+  `%`-escaping.
+
 ## [1.19.1] — 2026-06-10
 
 Bug-fix batch from a full-application review (4 independent reviewer

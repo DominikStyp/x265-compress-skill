@@ -6,16 +6,14 @@ POSIX-specific text lives in `_bat_templates.py` and `_sh_templates.py`
 respectively; this file:
 
   1. Picks the template + extension based on `platform_compat.IS_WINDOWS`.
-  2. Builds the substitution dict the way each shell wants its values
-     (cmd.exe takes raw paths inside `set "..."`; bash takes single-quoted
-     literals via `_sh_quote`).
-  3. Builds the variable trailing-flags block with the right line-continuation
-     character (`^` for cmd, `\\` for bash).
-  4. Writes the script + chmod +x on POSIX.
+  2. Calls the per-OS renderer, which pulls its substitution dict + escaping
+     from `_substitutions.py` (cmd.exe takes raw paths inside `set "..."`;
+     bash takes single-quoted literals via `_sh_quote`).
+  3. Writes the script + chmod +x on POSIX.
 
-The OS-specific stuff is contained to the three helper functions
-`_win_substitutions`, `_posix_substitutions`, and `_build_extra_args`.
-The public `write_script()` API is platform-agnostic.
+The per-shell value-escaping and the variable trailing-flags block live in
+`_substitutions.py`; this file owns the orchestration, the hook-sidecar
+fragments, and the public `write_script()` API (platform-agnostic).
 """
 from __future__ import annotations
 
@@ -24,7 +22,6 @@ from pathlib import Path
 
 from encode_modules.hook_config import write_hooks_sidecar
 from encode_modules.log_paths import logs_dir, per_encode_report_path
-from formatting import format_hms
 from platform_compat import IS_WINDOWS
 
 from . import _bat_templates as bat_t
@@ -33,40 +30,22 @@ from ._legacy_report_call import (
     build_legacy_report_call_posix as _build_legacy_report_call_posix,
     build_legacy_report_call_win as _build_legacy_report_call_win,
 )
+from ._substitutions import (
+    _build_extra_args,
+    _cmd_set_escape,
+    _posix_substitutions,
+    _sh_quote,
+    _win_substitutions,
+    fmt_duration,  # re-exported below — tests/test_formatting.py imports it here
+)
 from .plan import compress_workdir, EncodePlan, SCRIPT_EXTENSION
 from .probe import SourceInfo
+from .script_options import ScriptOptions
 
 # SCRIPT_EXTENSION is re-exported from plan.py (its single source of truth) for
 # the handful of callers that read it off this module (e.g. _smoke_test.py).
-__all__ = ["write_script", "SCRIPT_EXTENSION"]
-
-
-# --- Quoting helpers --------------------------------------------------------
-
-def _sh_quote(s: str) -> str:
-    """Single-quote a string for safe inclusion in a bash variable
-    assignment. POSIX shells treat anything inside single quotes as literal
-    EXCEPT the single quote itself, which must be escaped with the
-    close-escape-reopen idiom (`'\\''`)."""
-    return "'" + s.replace("'", "'\\''") + "'"
-
-
-def _cmd_title_escape(s: str) -> str:
-    """Escape cmd meta-chars for the title-context. cmd parses unquoted
-    `title` args, so `&` in a filename becomes a command separator. `^`
-    must be escaped first so we don't double-escape our own escape character."""
-    return s.replace("^", "^^").replace("&", "^&").replace("%", "%%")
-
-
-def _cmd_set_escape(s: str) -> str:
-    """Escape a value embedded inside cmd `set "VAR=<value>"`. Inside the
-    double quotes, `&` `(` `)` `^` `!` are already literal — but `%` is NOT:
-    cmd expands `%VAR%` and STRIPS a lone `%` on the line before `set` runs, so
-    a path like `C:\\50%PATH%.mkv` would expand PATH (corrupting the path the
-    encoder actually runs on) and `70% Hell` would lose its `%`. Double every
-    `%` so cmd stores the literal. (`"` needs no handling — it can't occur in a
-    Windows path or filename.)"""
-    return s.replace("%", "%%")
+# fmt_duration is re-exported from _substitutions.py for tests/test_formatting.
+__all__ = ["write_script", "SCRIPT_EXTENSION", "fmt_duration"]
 
 
 # --- on_chunk_done hook fragments ------------------------------------------
@@ -118,130 +97,11 @@ def _hook_fragments_posix(tmp_dir: Path, stem: str,
             ' \\\n  --hooks-config "${_SKILL_HOOKS}"')
 
 
-# --- Time formatting -------------------------------------------------------
-
-def fmt_duration(seconds: float) -> str:
-    """Format seconds as `H:MM:SS` for the script's pre-encode summary
-    (delegates to the canonical formatting.format_hms)."""
-    return format_hms(seconds)
-
-
-def _safe_audio_codecs(values) -> str:
-    """Strip quotes/newlines so values are safe to embed in the banner echo
-    lines. Defensive — ffprobe output is already well-formed."""
-    safe = [str(v).replace('"', "'").replace("\n", " ") for v in values]
-    return ", ".join(safe) or "none"
-
-
-# --- Substitution-dict builders -------------------------------------------
-
-def _common_fields(info: SourceInfo, plan: EncodePlan) -> dict:
-    """Fields used identically in both Windows and POSIX templates."""
-    return dict(
-        codec=info.codec,
-        width=info.width, height=info.height,
-        fps=f"{info.fps:.3f}".rstrip("0").rstrip("."),
-        src_kbps=info.video_bitrate_kbps,
-        bit_depth=info.bit_depth,
-        hdr_tag=" HDR" if info.is_hdr else "",
-        preset=plan.preset, crf=plan.crf, pix_fmt_out=plan.pix_fmt_out,
-        x265_params=":".join(plan.x265_params),
-        audio_codecs=_safe_audio_codecs(info.audio_codecs),
-        duration=f"{info.duration_sec:.3f}",
-        duration_str=fmt_duration(info.duration_sec),
-    )
-
-
-def _win_substitutions(info: SourceInfo, plan: EncodePlan, source_path: Path,
-                      *, no_pause: bool) -> dict:
-    """Build the Windows substitution dict. Paths embedded raw inside cmd
-    `set "..."` syntax — cmd handles `&`, `(`, `)`, `!`, `^` etc. correctly
-    in that context."""
-    base = source_path.stem
-    common = _common_fields(info, plan)
-    return dict(
-        common,
-        base=base,
-        base_title=_cmd_title_escape(base),
-        # Paths land in `set "VAR=..."` (and the done-echo), so `%` must be
-        # doubled — see _cmd_set_escape. Other meta-chars are literal there.
-        input_path=_cmd_set_escape(str(source_path)),
-        output_path=_cmd_set_escape(plan.output_path),
-        # `%` escape for the cmd `echo` line that prints estimated_reduction.
-        estimated_reduction=plan.estimated_reduction.replace("%", "%%"),
-        pause_line="" if no_pause else "pause",
-    )
-
-
-def _posix_substitutions(info: SourceInfo, plan: EncodePlan, source_path: Path,
-                        *, no_pause: bool) -> dict:
-    """Build the POSIX substitution dict. Paths are pre-quoted via
-    `_sh_quote` so the variable assignments embed safely regardless of
-    spaces, `&`, `[`, `]`, `$`, `!` in filenames."""
-    base = source_path.stem
-    common = _common_fields(info, plan)
-    pause = ('read -n1 -s -r -p "Press any key to continue..."; echo'
-             if not no_pause else "")
-    return dict(
-        common,
-        base=base,
-        # The title is passed to printf as a %s DATA argument (see the .sh
-        # template), so it just needs full single-quoting like any other value.
-        base_title=_sh_quote(base),
-        input_path=_sh_quote(str(source_path)),
-        # plan.output_path is used both as a quoted variable value and as a
-        # label in a double-quoted echo; _sh_quote covers the value, and echo
-        # (unlike printf) treats `%` literally, so no extra escaping is needed.
-        output_path=_sh_quote(plan.output_path),
-        estimated_reduction=plan.estimated_reduction,
-        pause_line=pause,
-    )
-
-
-# --- extra_args block (line-continuation differs by shell) ------------------
-
-def _build_extra_args(*, line_cont: str,
-                     max_output_bytes: int | None,
-                     auto_fix_choke: bool,
-                     no_pre_flight_scan: bool,
-                     auto_patch_source: bool,
-                     max_patch_seconds: float,
-                     source_path: Path,
-                     info: SourceInfo,
-                     done_dir: str | None = None,
-                     visual_quality_threshold: float | None = None,
-                     no_log_chunk_metrics: bool = False,
-                     quote_value=None) -> str:
-    """Build the variable trailing-flags block appended to the encoder
-    command line. `line_cont` is the shell's line-continuation character
-    (`^` for cmd.exe, `\\` for bash)."""
-    extra = ""
-    if max_output_bytes is not None:
-        extra += f" {line_cont}\n  --max-output-bytes {max_output_bytes}"
-        extra += f" {line_cont}\n  --source-bytes {source_path.stat().st_size}"
-        extra += f" {line_cont}\n  --total-duration-seconds {info.duration_sec:.3f}"
-    if auto_fix_choke:
-        extra += f" {line_cont}\n  --auto-fix-choke"
-    if no_pre_flight_scan:
-        extra += f" {line_cont}\n  --no-pre-flight-scan"
-    if auto_patch_source:
-        extra += f" {line_cont}\n  --auto-patch-source"
-        extra += f" {line_cont}\n  --max-patch-seconds {max_patch_seconds}"
-    if visual_quality_threshold is not None:
-        extra += (f" {line_cont}\n  --visual-quality-threshold "
-                  f"{visual_quality_threshold:g}")
-    if done_dir:
-        # done_dir is a path possibly containing spaces, `&`, etc. The
-        # caller injects a quote-helper (`_cmd_set_escape`-via-double-quote
-        # on Windows, `_sh_quote` on POSIX) so the shell sees a single
-        # token. Falls back to raw interpolation when none provided —
-        # tests use that to inspect the unquoted value.
-        quoted = quote_value(done_dir) if quote_value is not None else (
-            f'"{done_dir}"')
-        extra += f" {line_cont}\n  --done-dir {quoted}"
-    if no_log_chunk_metrics:
-        extra += f" {line_cont}\n  --no-log-chunk-metrics"
-    return extra
+# The substitution-dict builders, shell-quoting helpers, and the variable
+# trailing-flags block (`_build_extra_args`) live in ``_substitutions.py`` so
+# this module stays a slim orchestrator under the 500-line cap. They're
+# imported at the top under the same names the renderers use, so the call
+# sites below are unchanged.
 
 
 # Legacy single-pass report-call helpers were extracted to
@@ -287,48 +147,34 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
     sidecar_dir.mkdir(parents=True, exist_ok=True)
     report_md_path = per_encode_report_path(output_path_obj)
 
-    if IS_WINDOWS:
-        content = _render_windows_script(
-            info, plan, source_path, skill_dir, tmp_dir,
-            sidecar_dir, report_md_path,
-            resumable=resumable, segment_seconds=segment_seconds,
-            parallel=parallel,
-            max_output_bytes=max_output_bytes,
-            max_size_percent=max_size_percent,
-            auto_fix_choke=auto_fix_choke,
-            no_pre_flight_scan=no_pre_flight_scan,
-            auto_patch_source=auto_patch_source,
-            max_patch_seconds=max_patch_seconds,
-            no_report=no_report,
-            no_pause=no_pause,
-            on_chunk_done=on_chunk_done,
-            on_job_end=on_job_end,
-            on_file_complete=on_file_complete,
-            done_dir=done_dir,
-            visual_quality_threshold=visual_quality_threshold,
-            no_log_chunk_metrics=no_log_chunk_metrics,
-        )
-    else:
-        content = _render_posix_script(
-            info, plan, source_path, skill_dir, tmp_dir,
-            sidecar_dir, report_md_path,
-            resumable=resumable, segment_seconds=segment_seconds,
-            parallel=parallel,
-            max_output_bytes=max_output_bytes,
-            max_size_percent=max_size_percent,
-            auto_fix_choke=auto_fix_choke,
-            no_pre_flight_scan=no_pre_flight_scan,
-            auto_patch_source=auto_patch_source,
-            max_patch_seconds=max_patch_seconds,
-            no_report=no_report,
-            no_pause=no_pause,
-            on_chunk_done=on_chunk_done,
-            on_job_end=on_job_end,
-            on_file_complete=on_file_complete,
-            done_dir=done_dir,
-            visual_quality_threshold=visual_quality_threshold,
-            no_log_chunk_metrics=no_log_chunk_metrics,
-        )
+    # Pack the encode-behaviour flags into one object so the renderers and
+    # `_build_extra_args` take a single parameter instead of re-threading ~17
+    # of them by name. The public kwargs above stay the API; this is a 1:1
+    # transcription (see ScriptOptions for why each field belongs here).
+    opts = ScriptOptions(
+        resumable=resumable, segment_seconds=segment_seconds,
+        parallel=parallel,
+        max_output_bytes=max_output_bytes,
+        max_size_percent=max_size_percent,
+        auto_fix_choke=auto_fix_choke,
+        no_pre_flight_scan=no_pre_flight_scan,
+        auto_patch_source=auto_patch_source,
+        max_patch_seconds=max_patch_seconds,
+        no_report=no_report,
+        no_pause=no_pause,
+        on_chunk_done=on_chunk_done,
+        on_job_end=on_job_end,
+        on_file_complete=on_file_complete,
+        done_dir=done_dir,
+        visual_quality_threshold=visual_quality_threshold,
+        no_log_chunk_metrics=no_log_chunk_metrics,
+    )
+
+    render = _render_windows_script if IS_WINDOWS else _render_posix_script
+    content = render(
+        info, plan, source_path, skill_dir, tmp_dir,
+        sidecar_dir, report_md_path, opts,
+    )
 
     out_path = Path(plan.script_path)
     # Write without BOM. cmd.exe + chcp 65001 handles UTF-8; bash reads
@@ -355,32 +201,16 @@ def write_script(info: SourceInfo, plan: EncodePlan, source_path: Path,
 
 
 def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
-                          sidecar_dir, report_md_path, *, resumable,
-                          segment_seconds,
-                          parallel, max_output_bytes, max_size_percent,
-                          auto_fix_choke, no_pre_flight_scan,
-                          auto_patch_source, max_patch_seconds,
-                          no_report, no_pause, on_chunk_done=None,
-                          on_job_end=None, on_file_complete=None,
-                          done_dir=None,
-                          visual_quality_threshold=None,
-                          no_log_chunk_metrics=False) -> str:
-    common = _win_substitutions(info, plan, source_path, no_pause=no_pause)
-    if resumable:
+                          sidecar_dir, report_md_path,
+                          opts: ScriptOptions) -> str:
+    common = _win_substitutions(info, plan, source_path, no_pause=opts.no_pause)
+    if opts.resumable:
         workdir = compress_workdir(tmp_dir, source_path)
-        parallel_label = (f"{parallel} chunks in parallel"
-                          if parallel > 1 else "one at a time")
+        parallel_label = (f"{opts.parallel} chunks in parallel"
+                          if opts.parallel > 1 else "one at a time")
         extra_args = _build_extra_args(
-            line_cont="^",
-            max_output_bytes=max_output_bytes,
-            auto_fix_choke=auto_fix_choke,
-            no_pre_flight_scan=no_pre_flight_scan,
-            auto_patch_source=auto_patch_source,
-            max_patch_seconds=max_patch_seconds,
+            opts, line_cont="^",
             source_path=source_path, info=info,
-            done_dir=done_dir,
-            visual_quality_threshold=visual_quality_threshold,
-            no_log_chunk_metrics=no_log_chunk_metrics,
             # cmd.exe parses `--done-dir "C:\path with spaces"`; wrap in dq
             # and double `%` inside. cmd doesn't strip backslashes — Path
             # separators survive.
@@ -391,17 +221,17 @@ def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
         # the `>` as redirection and creates a file named after the
         # threshold value (e.g. `80.0`).
         threshold_label = (
-            f"abort if projected output ^> {max_size_percent:.1f}%% of source"
-            if max_size_percent is not None else "off"
+            f"abort if projected output ^> {opts.max_size_percent:.1f}%% of source"
+            if opts.max_size_percent is not None else "off"
         )
-        no_report_flag = " ^\n  --no-report" if no_report else ""
+        no_report_flag = " ^\n  --no-report" if opts.no_report else ""
         hooks_setup, hooks_flag = _hook_fragments_win(
-            sidecar_dir, source_path.stem, on_chunk_done, on_job_end,
-            on_file_complete)
+            sidecar_dir, source_path.stem, opts.on_chunk_done, opts.on_job_end,
+            opts.on_file_complete)
         return bat_t.RESUMABLE_BAT_TEMPLATE.format(
             resumable_script=_cmd_set_escape(str(skill_dir / "encode_resumable.py")),
             workdir=_cmd_set_escape(str(workdir)),
-            segment_seconds=segment_seconds, parallel=parallel,
+            segment_seconds=opts.segment_seconds, parallel=opts.parallel,
             parallel_label=parallel_label,
             extra_args=extra_args,
             threshold_label=threshold_label,
@@ -413,59 +243,43 @@ def _render_windows_script(info, plan, source_path, skill_dir, tmp_dir,
         progress_script=_cmd_set_escape(str(skill_dir / "progress.py")),
         report_script=_cmd_set_escape(str(skill_dir / "report.py")),
         report_md_path=_cmd_set_escape(str(report_md_path)),
-        report_call=_build_legacy_report_call_win(plan, max_size_percent,
-                                                  no_report=no_report),
+        report_call=_build_legacy_report_call_win(plan, opts.max_size_percent,
+                                                  no_report=opts.no_report),
         **common,
     )
 
 
 def _render_posix_script(info, plan, source_path, skill_dir, tmp_dir,
-                        sidecar_dir, report_md_path, *, resumable,
-                        segment_seconds,
-                        parallel, max_output_bytes, max_size_percent,
-                        auto_fix_choke, no_pre_flight_scan,
-                        auto_patch_source, max_patch_seconds,
-                        no_report, no_pause, on_chunk_done=None,
-                        on_job_end=None, on_file_complete=None,
-                        done_dir=None,
-                        visual_quality_threshold=None,
-                        no_log_chunk_metrics=False) -> str:
-    common = _posix_substitutions(info, plan, source_path, no_pause=no_pause)
+                        sidecar_dir, report_md_path,
+                        opts: ScriptOptions) -> str:
+    common = _posix_substitutions(info, plan, source_path, no_pause=opts.no_pause)
     # Skill-script paths are bash variable values — quote them too.
     resumable_script = _sh_quote(str(skill_dir / "encode_resumable.py"))
     progress_script = _sh_quote(str(skill_dir / "progress.py"))
     report_script = _sh_quote(str(skill_dir / "report.py"))
 
-    if resumable:
+    if opts.resumable:
         workdir = compress_workdir(tmp_dir, source_path)
-        parallel_label = (f"{parallel} chunks in parallel"
-                          if parallel > 1 else "one at a time")
+        parallel_label = (f"{opts.parallel} chunks in parallel"
+                          if opts.parallel > 1 else "one at a time")
         extra_args = _build_extra_args(
-            line_cont="\\",
-            max_output_bytes=max_output_bytes,
-            auto_fix_choke=auto_fix_choke,
-            no_pre_flight_scan=no_pre_flight_scan,
-            auto_patch_source=auto_patch_source,
-            max_patch_seconds=max_patch_seconds,
+            opts, line_cont="\\",
             source_path=source_path, info=info,
-            done_dir=done_dir,
-            visual_quality_threshold=visual_quality_threshold,
-            no_log_chunk_metrics=no_log_chunk_metrics,
             # bash single-quote escape for paths with spaces / `&` / `(` etc.
             quote_value=_sh_quote,
         )
         threshold_label = (
-            f"abort if projected output > {max_size_percent:.1f}% of source"
-            if max_size_percent is not None else "off"
+            f"abort if projected output > {opts.max_size_percent:.1f}% of source"
+            if opts.max_size_percent is not None else "off"
         )
-        no_report_flag = " \\\n  --no-report" if no_report else ""
+        no_report_flag = " \\\n  --no-report" if opts.no_report else ""
         hooks_setup, hooks_flag = _hook_fragments_posix(
-            sidecar_dir, source_path.stem, on_chunk_done, on_job_end,
-            on_file_complete)
+            sidecar_dir, source_path.stem, opts.on_chunk_done, opts.on_job_end,
+            opts.on_file_complete)
         return sh_t.RESUMABLE_SH_TEMPLATE.format(
             resumable_script=resumable_script,
             workdir=_sh_quote(str(workdir)),
-            segment_seconds=segment_seconds, parallel=parallel,
+            segment_seconds=opts.segment_seconds, parallel=opts.parallel,
             parallel_label=parallel_label,
             extra_args=extra_args,
             threshold_label=threshold_label,
@@ -477,8 +291,8 @@ def _render_posix_script(info, plan, source_path, skill_dir, tmp_dir,
         progress_script=progress_script,
         report_script=report_script,
         report_md_path=_sh_quote(str(report_md_path)),
-        report_call=_build_legacy_report_call_posix(plan, max_size_percent,
-                                                    no_report=no_report),
+        report_call=_build_legacy_report_call_posix(plan, opts.max_size_percent,
+                                                    no_report=opts.no_report),
         **common,
     )
 
