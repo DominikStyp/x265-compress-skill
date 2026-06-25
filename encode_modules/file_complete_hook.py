@@ -28,7 +28,8 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Optional
 
-from .hook_logging import record_hook_outcome
+from .hook_base import (env_float, env_int, env_str, record_hook_outcome,
+                        run_hook_command)
 
 
 HOOK_TIMEOUT_SEC = 30.0
@@ -80,40 +81,18 @@ class FileCompleteHook:
             return None
         if status != "ok" or output is None:
             return None
-        env = dict(os.environ)
-        env.update(self._build_env(
-            output=output, output_bytes_final=output_bytes_final,
-            source_bytes=source_bytes, wall_seconds=wall_seconds,
-            pct_saved=pct_saved, crf=crf, crf_retry_chain=crf_retry_chain,
-            vmaf_mean=vmaf_mean,
-        ))
-        try:
-            proc = self._runner(
-                self._command, env=env, timeout=self._timeout,
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-            )
-        except subprocess.TimeoutExpired:
-            self._log("timeout")
-            return (f"  ! on_file_complete hook timed out after "
-                    f"{self._timeout:g}s")
-        except (OSError, ValueError, subprocess.SubprocessError) as e:
-            self._log("spawn-error", f"{type(e).__name__}: {e}")
-            return (f"  ! on_file_complete hook failed: "
-                    f"{type(e).__name__}: {e}")
-        rc = getattr(proc, "returncode", 0)
-        if rc:
-            tail = (getattr(proc, "stderr", "") or "").strip().replace("\n", " ")
-            self._log(f"exited {rc}", tail[-500:])
-            return (f"  ! on_file_complete hook exited {rc}"
-                    + (f": {tail[-200:]}" if tail else ""))
-        self._log("ok")
-        return None
-
-    def _log(self, outcome: str, stderr_tail: str = "") -> None:
-        """Persist this fire's outcome to the durable hook log. No-raise."""
-        self._event_log(source=self._source, event=HOOK_NAME,
-                        command=self._command, outcome=outcome,
-                        stderr_tail=stderr_tail)
+        return run_hook_command(
+            command=self._command,
+            env_overrides=self._build_env(
+                output=output, output_bytes_final=output_bytes_final,
+                source_bytes=source_bytes, wall_seconds=wall_seconds,
+                pct_saved=pct_saved, crf=crf, crf_retry_chain=crf_retry_chain,
+                vmaf_mean=vmaf_mean,
+            ),
+            timeout=self._timeout, runner=self._runner,
+            event_log=self._event_log, source=self._source,
+            hook_name=HOOK_NAME,
+        )
 
     def _build_env(self, *,
                    output: Path,
@@ -133,18 +112,13 @@ class FileCompleteHook:
             "X265_SOURCE": str(self._source),
             "X265_WORKDIR": str(self._workdir),
             "X265_OUTPUT": str(output),
-            "X265_SOURCE_BYTES": (
-                "" if source_bytes is None else str(source_bytes)),
-            "X265_OUTPUT_BYTES": (
-                "" if output_bytes_final is None else str(output_bytes_final)),
-            "X265_WALL_SECONDS": (
-                "" if wall_seconds is None else f"{wall_seconds:.2f}"),
-            "X265_PCT_SAVED": (
-                "" if pct_saved is None else f"{pct_saved:.2f}"),
-            "X265_CRF": "" if crf is None else str(crf),
+            "X265_SOURCE_BYTES": env_str(source_bytes),
+            "X265_OUTPUT_BYTES": env_str(output_bytes_final),
+            "X265_WALL_SECONDS": env_float(wall_seconds),
+            "X265_PCT_SAVED": env_float(pct_saved),
+            "X265_CRF": env_str(crf),
             "X265_CRF_RETRY_CHAIN": crf_retry_chain,
-            "X265_VMAF_MEAN": (
-                "" if vmaf_mean is None else f"{vmaf_mean:.2f}"),
+            "X265_VMAF_MEAN": env_float(vmaf_mean),
         }
         env.update(_queue_counter_defaults(
             source_bytes=source_bytes,
@@ -170,7 +144,7 @@ def _queue_counter_defaults(*,
     Adding 1 here is correct by construction — FileCompleteHook only fires
     on `ok`."""
     # Past oks observed by the queue runner (default 0 in single-file mode).
-    past_finished = _int_env("X265_QUEUE_ITEMS_FINISHED", default=0)
+    past_finished = env_int("X265_QUEUE_ITEMS_FINISHED", default=0)
     this_finished = past_finished + 1
     defaults: dict[str, str] = {
         "X265_QUEUE_INDEX": "1",
@@ -179,14 +153,10 @@ def _queue_counter_defaults(*,
         "X265_QUEUE_ITEMS_FAILED": "0",
         "X265_QUEUE_ITEMS_STOPPED": "0",
         "X265_QUEUE_ITEMS_SKIPPED": "0",
-        "X265_QUEUE_BYTES_IN_SO_FAR": (
-            "" if source_bytes is None else str(source_bytes)),
-        "X265_QUEUE_BYTES_OUT_SO_FAR": (
-            "" if output_bytes_final is None else str(output_bytes_final)),
-        "X265_QUEUE_PCT_SAVED_SO_FAR": (
-            "" if pct_saved is None else f"{pct_saved:.2f}"),
-        "X265_QUEUE_WALL_SECONDS": (
-            "" if wall_seconds is None else f"{wall_seconds:.2f}"),
+        "X265_QUEUE_BYTES_IN_SO_FAR": env_str(source_bytes),
+        "X265_QUEUE_BYTES_OUT_SO_FAR": env_str(output_bytes_final),
+        "X265_QUEUE_PCT_SAVED_SO_FAR": env_float(pct_saved),
+        "X265_QUEUE_WALL_SECONDS": env_float(wall_seconds),
     }
     # Real queue values (when present) take precedence — defaults only fill
     # in keys the parent hasn't already set.
@@ -197,13 +167,3 @@ def _queue_counter_defaults(*,
     return out
 
 
-def _int_env(name: str, *, default: int) -> int:
-    """Read an int env var with a clean fallback. Empty / non-numeric → default,
-    so a malformed overlay value never crashes the hook's no-raise contract."""
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return default
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return default

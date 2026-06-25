@@ -15,9 +15,12 @@ the resulting line widths.
 from __future__ import annotations
 
 import time
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from .probes import fmt_dur
+
+if TYPE_CHECKING:
+    from .slot_state import SlotState
 
 
 # Kept narrow so every live-block line fits inside default 80-col cmd.exe.
@@ -39,7 +42,7 @@ C_RED = "\033[31;1m"
 C_RESET = "\033[0m"
 
 
-def slot_elapsed_seconds(state: dict) -> Optional[float]:
+def slot_elapsed_seconds(state: "SlotState") -> Optional[float]:
     """Wall-clock seconds since this chunk began encoding, with any time
     the slot was suspended (via NtSuspendProcess) subtracted out.
 
@@ -47,11 +50,11 @@ def slot_elapsed_seconds(state: dict) -> Optional[float]:
     slot is currently paused (paused_at set), elapsed freezes at the
     instant of suspension — repeated calls return the same value until
     the slot resumes."""
-    t_start = state.get("t_start")
-    if t_start is None:
+    t_start = state.t_start
+    if not t_start:
         return None
-    paused_s = state.get("paused_s", 0.0)
-    paused_at = state.get("paused_at")
+    paused_s = state.paused_s
+    paused_at = state.paused_at
     if paused_at is not None:
         return max(0.0, paused_at - t_start - paused_s)
     return max(0.0, time.monotonic() - t_start - paused_s)
@@ -84,7 +87,7 @@ def slot_bar(pct: float, *, paused: bool) -> str:
     return f"{bar_color}{bar_fill(pct)}{C_RESET}"
 
 
-def render_slot_main(slot_id: int, state: Optional[dict],
+def render_slot_main(slot_id: int, state: "Optional[SlotState]",
                     *, paused: bool, focused: bool) -> str:
     """First of two rows per slot — chunk name, bar, percent, fps, speed.
     Stays well under 80 chars so it doesn't wrap in default cmd.exe (line
@@ -96,11 +99,11 @@ def render_slot_main(slot_id: int, state: Optional[dict],
     cursor = "> " if focused else "  "
     if not state:
         return f"{cursor}[slot {label}] idle"
-    dur = state["duration"]
-    pct = min(100.0, state["out_time_s"] / dur * 100) if dur else 0
+    dur = state.duration
+    pct = min(100.0, state.out_time_s / dur * 100) if dur else 0
     bar = slot_bar(pct, paused=paused)
-    name = state["chunk"]
-    suffix = state.get("label_suffix", "")
+    name = state.chunk
+    suffix = state.label_suffix
     # Reserve space for "(AUTO-FIX)" so the bar still lines up — name+suffix
     # together fit in a 14-char slot (chunk names like "src_0008.mkv" are
     # 12 chars, leaving room).
@@ -117,13 +120,13 @@ def render_slot_main(slot_id: int, state: Optional[dict],
     # advances during sleep but the frame counter doesn't, so post-wake
     # the cumulative average reads ~0 forever. See
     # `display._compute_live_rates_from_samples` for the algorithm.
-    fps = state.get("live_fps") or state["fps"]
-    speed = state.get("live_speed") or state["speed"]
+    fps = state.live_fps or state.fps
+    speed = state.live_speed or state.speed
     return (f"{cursor}[slot {label}] {name:<{max_len}} [{bar}] "
             f"{pct:5.1f}%  fps={fps:>5}  speed={speed:>6}")
 
 
-def render_slot_timing(slot_id: int, state: Optional[dict],
+def render_slot_timing(slot_id: int, state: "Optional[SlotState]",
                       *, paused: bool) -> str:
     """Second of two rows per slot — per-chunk elapsed wall time and
     extrapolated ETA, indented under the slot row above. Carries the
@@ -132,8 +135,8 @@ def render_slot_timing(slot_id: int, state: Optional[dict],
     pushes it past 80 cols and triggers terminal wrapping."""
     if not state:
         return "             (idle)"
-    dur = state["duration"]
-    pct = min(100.0, state["out_time_s"] / dur * 100) if dur else 0
+    dur = state.duration
+    pct = min(100.0, state.out_time_s / dur * 100) if dur else 0
     elapsed_s = slot_elapsed_seconds(state)
     elapsed_str = fmt_dur(elapsed_s) if elapsed_s is not None else "—"
     eta_str = slot_eta_str(elapsed_s, pct, paused=paused)

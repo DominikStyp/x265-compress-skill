@@ -36,12 +36,11 @@ os.environ unchanged — same passthrough JobEndHook uses.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 from typing import Callable, Optional
 
-from encode_modules.hook_logging import record_hook_outcome
+from encode_modules.hook_base import record_hook_outcome, run_hook_command
 
 from .queue_status_format import classify_marker, render_queue_summary
 
@@ -80,43 +79,18 @@ class QueueItemEndHook:
         failure / timeout / non-zero exit, else None. NEVER raises."""
         if self._command is None:
             return None
-        env = dict(os.environ)
-        env.update(self._build_env(
-            status=status, source=source, output=output, summary=summary,
-        ))
-        try:
-            proc = self._runner(
-                self._command, env=env, timeout=self._timeout,
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-            )
-        except subprocess.TimeoutExpired:
-            self._log(source, "timeout")
-            return (f"  ! on_queue_item_end hook timed out after "
-                    f"{self._timeout:g}s")
-        except (OSError, ValueError, subprocess.SubprocessError) as e:
-            # Same exhaustive catch as JobEndHook.fire — fire() runs in
-            # the queue's per-job loop and must never abort it. The NUL-in-
-            # argv ValueError from subprocess.run is the motivating case;
-            # FileNotFoundError on a missing notifier is the common one.
-            self._log(source, "spawn-error", f"{type(e).__name__}: {e}")
-            return (f"  ! on_queue_item_end hook failed: "
-                    f"{type(e).__name__}: {e}")
-        rc = getattr(proc, "returncode", 0)
-        if rc:
-            tail = (getattr(proc, "stderr", "") or "").strip().replace("\n", " ")
-            self._log(source, f"exited {rc}", tail[-500:])
-            return (f"  ! on_queue_item_end hook exited {rc}"
-                    + (f": {tail[-200:]}" if tail else ""))
-        self._log(source, "ok")
-        return None
-
-    def _log(self, source: Path, outcome: str, stderr_tail: str = "") -> None:
-        """Persist this fire's outcome to the durable hook log, keyed on the
-        just-finished job's source (so it sits next to that source's other
-        hook logs). No-raise — the injected logger swallows its own errors."""
-        self._event_log(source=source, event=HOOK_NAME,
-                        command=self._command, outcome=outcome,
-                        stderr_tail=stderr_tail)
+        # source is per-fire (the just-finished job's input) — not bound at
+        # construction like the in-encoder hooks — so the durable log lands
+        # next to that source's other hook logs.
+        return run_hook_command(
+            command=self._command,
+            env_overrides=self._build_env(
+                status=status, source=source, output=output, summary=summary,
+            ),
+            timeout=self._timeout, runner=self._runner,
+            event_log=self._event_log, source=source,
+            hook_name=HOOK_NAME,
+        )
 
     def _build_env(self, *,
                    status: str,

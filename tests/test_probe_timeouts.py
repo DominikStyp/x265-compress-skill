@@ -69,6 +69,46 @@ class ProbesTimeoutTest(unittest.TestCase):
                              "probe_duration must request a timeout")
 
 
+class RunFfprobeJsonSharedHelperTest(unittest.TestCase):
+    """v1.20.1 finding #4: the full-metadata probe argv + subprocess call is a
+    single shared helper (probes.run_ffprobe_json); probe_full and
+    compress_modules.probe.run_ffprobe differ only in failure POLICY."""
+
+    def test_builds_full_metadata_argv_with_timeout(self) -> None:
+        spy = mock.MagicMock(return_value=subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="{}", stderr=""))
+        with mock.patch.object(probes.subprocess, "run", spy):
+            probes.run_ffprobe_json(Path("v.mkv"), timeout_s=33)
+        argv = spy.call_args.args[0]
+        self.assertEqual(argv[0], "ffprobe")
+        self.assertIn("-show_format", argv)
+        self.assertIn("-show_streams", argv)        # full metadata, not just format
+        self.assertEqual(argv[-1], str(Path("v.mkv")))
+        self.assertEqual(spy.call_args.kwargs.get("timeout"), 33)
+
+    def test_timeout_propagates_to_caller(self) -> None:
+        # The helper does NOT swallow TimeoutExpired — each caller applies its
+        # own policy (probe_full → None, run_ffprobe → sys.exit).
+        with mock.patch.object(probes.subprocess, "run", side_effect=_timeout):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                probes.run_ffprobe_json(Path("x.mkv"))
+
+    def test_both_callers_route_through_the_helper(self) -> None:
+        # Each consumer binds run_ffprobe_json in its OWN namespace, so patch
+        # the binding each one actually resolves and confirm it's used.
+        fake = subprocess.CompletedProcess(args=[], returncode=0,
+                                           stdout='{"format":{}}', stderr="")
+        with mock.patch.object(probes, "run_ffprobe_json",
+                               return_value=fake) as spy_p:
+            probes.probe_full(Path("a.mkv"))
+        self.assertEqual(spy_p.call_count, 1)
+        with mock.patch.object(cprobe, "run_ffprobe_json",
+                               return_value=fake) as spy_c, \
+             mock.patch.object(cprobe.shutil, "which", return_value="ffprobe"):
+            cprobe.run_ffprobe(Path("b.mkv"))
+        self.assertEqual(spy_c.call_count, 1)
+
+
 class CompressProbeTimeoutTest(unittest.TestCase):
     def test_run_ffprobe_exits_cleanly_on_timeout(self) -> None:
         with mock.patch.object(cprobe.shutil, "which", return_value="ffprobe"), \

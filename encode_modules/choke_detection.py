@@ -86,13 +86,11 @@ def check_choke(display: "ParallelDisplay") -> Optional[tuple[int, str]]:
     if (last_check is not None or last_wall is not None) and gap > sleep_threshold:
         with display.lock:
             for s in display.slots.values():
-                s["t_start"] = now
-                s["paused_s"] = 0.0
-                if s.get("paused_at") is not None:
-                    s["paused_at"] = now
-                samples = s.get("out_time_samples")
-                if samples is not None:
-                    samples.clear()
+                s.t_start = now
+                s.paused_s = 0.0
+                if s.paused_at is not None:
+                    s.paused_at = now
+                s.out_time_samples.clear()
         display.events.put(
             f"  ~ Sleep/hibernation detected ({gap:.0f}s gap between checks) "
             f"— slot grace windows reset"
@@ -100,18 +98,18 @@ def check_choke(display: "ParallelDisplay") -> Optional[tuple[int, str]]:
         return None
 
     with display.lock:
-        slots_snap = {k: dict(v) for k, v in display.slots.items()}
+        slots_snap = {k: v.copy() for k, v in display.slots.items()}
         active_procs = dict(display.active_procs)
         already_choked = set(display.choked_chunks.keys())
     for slot_id, s in slots_snap.items():
-        chunk_name = s.get("chunk")
+        chunk_name = s.chunk
         if chunk_name in already_choked:
             continue
-        t_start = s.get("t_start")
-        if t_start is None:
+        t_start = s.t_start
+        if not t_start:
             continue
-        paused_s = s.get("paused_s", 0.0)
-        paused_at = s.get("paused_at")
+        paused_s = s.paused_s
+        paused_at = s.paused_at
         # Same "real" wall calc as the per-slot ETA display: pause time
         # doesn't count against the choke grace window.
         if paused_at is not None:
@@ -121,8 +119,7 @@ def check_choke(display: "ParallelDisplay") -> Optional[tuple[int, str]]:
         if wall < display.choke_grace_seconds:
             continue
         # Delta check over the trailing window.
-        samples = s.get("out_time_samples")
-        samples_list = list(samples) if samples else []
+        samples_list = list(s.out_time_samples)
         if len(samples_list) < 2:
             # No or near-no progress reports despite passing grace.
             # That IS a real choke — fall through to terminate.

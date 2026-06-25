@@ -20,21 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from encode_modules.job_end_hook import JobEndHook  # noqa: E402
-
-
-class _RecordingRunner:
-    def __init__(self, returncode: int = 0, stderr: str = "", raises=None):
-        self.returncode = returncode
-        self.stderr = stderr
-        self.raises = raises
-        self.calls: list[tuple] = []
-
-    def __call__(self, args, **kwargs):
-        self.calls.append((args, kwargs))
-        if self.raises is not None:
-            raise self.raises
-        return types.SimpleNamespace(returncode=self.returncode,
-                                     stderr=self.stderr)
+from tests._helpers import RecordingRunner as _RecordingRunner  # noqa: E402
 
 
 def _hook(command, runner, **over):

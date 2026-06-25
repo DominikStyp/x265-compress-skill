@@ -28,7 +28,7 @@ def mark_pause_start(display, slot: int) -> None:
     hold `display.lock`. Pairs with `settle_pause_elapsed` on resume."""
     s = display.slots.get(slot)
     if s:
-        s["paused_at"] = time.monotonic()
+        s.paused_at = time.monotonic()
 
 
 def settle_pause_elapsed(display, slot: int) -> None:
@@ -36,10 +36,9 @@ def settle_pause_elapsed(display, slot: int) -> None:
     `paused_s` counter so per-chunk elapsed never counts suspended time. Caller
     must hold `display.lock`. No-op if the slot wasn't paused."""
     s = display.slots.get(slot)
-    if s and s.get("paused_at") is not None:
-        s["paused_s"] = s.get("paused_s", 0.0) + (
-            time.monotonic() - s["paused_at"])
-        s["paused_at"] = None
+    if s and s.paused_at is not None:
+        s.paused_s = s.paused_s + (time.monotonic() - s.paused_at)
+        s.paused_at = None
 
 
 def toggle_pause(display, slot: int) -> str:

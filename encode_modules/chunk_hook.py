@@ -25,12 +25,11 @@ X265_CHUNK_INDEX for back-compat, but it is NOT a progress signal on its own.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Optional
 
-from .hook_logging import record_hook_outcome
+from .hook_base import record_hook_outcome, run_hook_command
 
 
 HOOK_TIMEOUT_SEC = 30.0
@@ -85,41 +84,17 @@ class ChunkHook:
         failure/timeout/non-zero exit, else None. NEVER raises."""
         if self._command is None:
             return None
-        env = dict(os.environ)
-        env.update(self._build_env(chunk_name, index, status, output,
-                                   elapsed_sec))
-        try:
-            proc = self._runner(
-                self._command, env=env, timeout=self._timeout,
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-            )
-        except subprocess.TimeoutExpired:
-            self._log("timeout")
-            return (f"  ! on_chunk_done hook timed out after "
-                    f"{self._timeout:g}s ({chunk_name})")
-        except (OSError, ValueError, subprocess.SubprocessError) as e:
-            # ValueError: embedded NUL in the argv, or undecodable stderr under
-            # text=True. Must be caught — this runs in the worker's finally, so
-            # a raise here would kill the slot.
-            self._log("spawn-error", f"{type(e).__name__}: {e}")
-            return (f"  ! on_chunk_done hook failed ({chunk_name}): "
-                    f"{type(e).__name__}: {e}")
-        rc = getattr(proc, "returncode", 0)
-        if rc:
-            tail = (getattr(proc, "stderr", "") or "").strip().replace("\n", " ")
-            self._log(f"exited {rc}", tail[-500:])
-            return (f"  ! on_chunk_done hook exited {rc} ({chunk_name})"
-                    + (f": {tail[-200:]}" if tail else ""))
-        self._log("ok")
-        return None
-
-    def _log(self, outcome: str, stderr_tail: str = "") -> None:
-        """Persist this fire's outcome to the durable hook log. No-raise (the
-        injected logger swallows its own errors); the per-source path is
-        derived from the bound source so config + log sit side by side."""
-        self._event_log(source=self._source, event=HOOK_NAME,
-                        command=self._command, outcome=outcome,
-                        stderr_tail=stderr_tail)
+        # The chunk-done message names the chunk in every variant; pass it as
+        # the shared suffix (placed before the ": <tail>" continuation, so the
+        # rendered strings stay byte-identical to the pre-refactor versions).
+        return run_hook_command(
+            command=self._command,
+            env_overrides=self._build_env(chunk_name, index, status, output,
+                                          elapsed_sec),
+            timeout=self._timeout, runner=self._runner,
+            event_log=self._event_log, source=self._source,
+            hook_name=HOOK_NAME, log_suffix=f" ({chunk_name})",
+        )
 
     def _done_chunks(self) -> list[Path]:
         """Source chunks whose encoded counterpart exists on disk RIGHT NOW.

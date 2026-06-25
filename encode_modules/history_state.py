@@ -35,18 +35,57 @@ import atexit
 import sys
 import threading
 from pathlib import Path
+from typing import Any, Dict, Optional, TYPE_CHECKING, TypedDict
 
 import history as _hist
 from .chunk_metrics_log import (
     build_summary_for_history_record as _build_chunk_metrics_summary,
 )
-from .file_complete_hook import FileCompleteHook
 from .history_hooks import (
     fire_file_complete_hook as _fire_file_complete_hook_impl,
     fire_job_end_hook as _fire_job_end_hook_impl,
 )
-from .job_end_hook import JobEndHook
 from .probes import probe_full
+
+if TYPE_CHECKING:
+    # Annotation-only: the recorder holds opaque hook references and delegates
+    # all firing to history_hooks' free functions, so it does NOT need the
+    # concrete hook classes at runtime. Keeping these under TYPE_CHECKING
+    # breaks the runtime coupling (the recorder is a state+flush coordinator,
+    # not a hook factory) — `from __future__ import annotations` makes the
+    # annotations lazy strings so this is safe.
+    from .file_complete_hook import FileCompleteHook
+    from .job_end_hook import JobEndHook
+
+
+class HistoryRecord(TypedDict, total=False):
+    """The shape of one encoding-history JSONL row (what ``self.current``
+    accumulates and ``history.append_record`` serialises). ``total=False``:
+    every key is optional because the record is built incrementally — ``init``
+    seeds the input/settings block, chunk timings stream in, and the outcome
+    fields land at ``finalize``/``flush``.
+
+    This is **living documentation of the on-disk schema**, the single place
+    the stable top-level keys are enumerated; it is not type-checker-enforced
+    (the project ships no type checker) and does NOT capture the status-
+    specific extras ``mark_status(status, **extra)`` adds (e.g. ``failed_chunks``,
+    ``verify_problems``, ``abort_reason``, ``remaining_chunks``, ``total_chunks``,
+    ``pre_flight_scan``) — those are deliberately open-ended. The on-disk format
+    is an invariant (AGENTS.md): adding/removing/renaming a key here means
+    bumping ``history.SCHEMA_VERSION`` and updating the backward-compat tests."""
+    schema_version: int
+    timestamp_start_utc: str
+    status: str                 # in_progress → ok / stopped-* / *-failed / ...
+    input: Dict[str, Any]       # build_input_block: codec/res/fps/bpp/size/...
+    output: Dict[str, Any]      # path, size_bytes, container
+    settings: Dict[str, Any]    # crf/preset/pix_fmt/x265_params/parallel/...
+    environment: Dict[str, Any]
+    chunk_elapsed: Dict[str, float]   # chunk_name -> wall seconds
+    chunks: list                 # per-chunk records (build_chunk_records)
+    reduction: Dict[str, Any]   # bytes_saved, pct_saved
+    quality: Dict[str, Any]     # VMAF/PSNR/SSIM means (success path)
+    chunk_metrics_summary: Dict[str, Any]
+    wall_seconds: float
 
 
 class HistoryRecorder:
@@ -59,7 +98,7 @@ class HistoryRecorder:
     a partial record on early exit."""
 
     def __init__(self) -> None:
-        self.current: dict | None = None
+        self.current: Optional[HistoryRecord] = None
         self.written: bool = False
         # Guards record_chunk_elapsed, the one method N worker threads call
         # concurrently. Defensive only: each call writes a distinct key, so

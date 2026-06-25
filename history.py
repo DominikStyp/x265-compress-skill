@@ -31,6 +31,7 @@ import sys
 import time
 from pathlib import Path
 
+from encode_modules.log_paths import history_jsonl_path
 from encode_modules.probes import probe_duration_or_none
 from platform_compat import IS_WINDOWS
 from video_metrics import bits_per_pixel, video_stream_metrics
@@ -72,9 +73,6 @@ def default_history_path() -> Path:
     env = os.environ.get("CLAUDE_ENCODING_HISTORY_PATH")
     if env:
         return Path(env)
-    # Local import to dodge a circular dep: log_paths imports nothing from
-    # history, but several encode_modules imports flow through history.
-    from encode_modules.log_paths import history_jsonl_path
     return history_jsonl_path(default_history_root())
 
 

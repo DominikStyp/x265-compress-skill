@@ -101,10 +101,26 @@ def encode_chunks_serial(chunks: list[Path], workdir: Path, *,
              "--duration", str(max(0.001, chunk_dur))],
             stdin=ff.stdout,
         )
-        ff.stdout.close()
-        prog.wait()
-        rc = ff.wait()
-        chunk_elapsed = time.monotonic() - chunk_start
+        # Own both Popens' teardown: if prog.wait()/ff.wait() is interrupted
+        # (Ctrl-C, etc.) a bare Popen is not reaped and the ffmpeg encoder
+        # would keep running orphaned. On the normal path both have already
+        # exited so the finally is a no-op. (Parallel path has the same guard
+        # in chunk_worker.)
+        try:
+            ff.stdout.close()
+            prog.wait()
+            rc = ff.wait()
+            chunk_elapsed = time.monotonic() - chunk_start
+        finally:
+            for p in (prog, ff):
+                if p.poll() is None:
+                    try:
+                        p.terminate()
+                        p.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        p.kill()
+                    except OSError:
+                        pass
 
         if rc != 0:
             # Quarantine (rename aside), NEVER unlink: the .part holds real

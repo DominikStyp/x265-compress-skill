@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from encode_modules.choke_detection import check_choke  # noqa: E402
+from encode_modules.slot_state import SlotState  # noqa: E402
 
 
 class _StubDisplay:
@@ -51,13 +52,11 @@ class _StubDisplay:
         """Add one slot that WOULD be declared choked: long past the grace
         window with no progress samples."""
         now = time.monotonic()
-        self.slots[0] = {
-            "chunk": "src_0004.mkv",
-            "t_start": now - 600.0,   # 10 min in — well past grace
-            "paused_s": 0.0,
-            "paused_at": None,
-            "out_time_samples": collections.deque(),  # no progress -> choke
-        }
+        self.slots[0] = SlotState(
+            chunk="src_0004.mkv",
+            t_start=now - 600.0,        # 10 min in — well past grace
+            out_time_samples=collections.deque(),  # no progress -> choke
+        )
 
     def drain_events(self) -> list[str]:
         out = []

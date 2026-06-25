@@ -3,6 +3,53 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.20.1] — 2026-06-25
+
+Technical-debt pass from a 5-reviewer audit of the codebase. One correctness
+fix; the rest are behaviour-preserving refactors (SOLID/DRY/readability) with
+no new user-visible surface — so no README feature changes. Verified by the
+full suite (759 tests, +41 new) and two independent adversarial reviewers.
+
+### Fixed
+- **Orphaned ffmpeg on a mid-encode exception.** `chunk_worker` (parallel) and
+  `encode_serial` ran their encoder in a `subprocess.Popen` but did not reap it
+  if the progress read loop unwound via an exception (a decode error on the
+  `-progress` stream, a `KeyboardInterrupt` in the worker, etc.). A bare Popen
+  isn't reaped on unwind, so the ffmpeg child kept encoding full-speed,
+  orphaned, until process exit. Both paths now own the child in a `try/finally`
+  (terminate → wait → kill), matching the libvmaf guard. This also closes the
+  spawn↔register-proc gap reviewers flagged.
+
+### Changed
+- **Hook consolidation (DRY/SOLID).** The four notification hooks (chunk-done,
+  job-end, file-complete, queue-item-end) shared a byte-identical `fire()` body
+  (subprocess call + the no-raise catch band + stderr-tail slicing + durable
+  logging). That body is now one `encode_modules/hook_base.run_hook_command`;
+  each hook keeps only its distinct `_build_env` + event constants. The catch
+  band (the AGENTS.md "broad-except only at guard seams" invariant) lives in
+  ONE place instead of four. Shared `env_str`/`env_float`/`env_int` helpers and
+  named stderr-tail caps replace the repeated inline idioms.
+- **Typed per-slot state.** The live-display slot dict (mutated across worker
+  threads, keys split across `slot_start`/`slot_progress`) is now a typed
+  `encode_modules/slot_state.SlotState` dataclass — attribute access, one
+  definition, a bad field name is an error instead of a silent `None`.
+- **History-record schema documented** as a `HistoryRecord` TypedDict (living
+  documentation of the on-disk JSONL shape).
+- **ffprobe consolidation.** The full-metadata probe argv + subprocess call is
+  one shared `probes.run_ffprobe_json`; `probe_full` (best-effort) and
+  `compress_modules.probe.run_ffprobe` (fail-fast) now differ only in failure
+  policy. JSON-decode catches narrowed from bare `except` to `JSONDecodeError`.
+- **Decoupling.** `HistoryRecorder` no longer imports the concrete hook classes
+  at runtime (annotation-only, under `TYPE_CHECKING`); the `history` ↔
+  `log_paths` circular-import dodge is removed (hoisted to a normal top-level
+  import). `display.py`'s lazy in-method imports of `pause_control` /
+  `size_projection` / `choke_detection` are hoisted to module top (no cycle
+  existed).
+- **Test tidy-up.** Shared `tests/_helpers.RecordingRunner` replaces the
+  copy-pasted stand-in across the hook test modules; new direct tests for the
+  previously-untested `messages.py` (user-facing abort/skip blocks) and
+  `queue_modules/queue_reporting.py` (the on-disk report I/O seam).
+
 ## [1.20.0] — 2026-06-25
 
 Notification-resilience release, implementing the

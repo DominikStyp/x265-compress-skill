@@ -12,6 +12,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from encode_modules.probes import run_ffprobe_json
 from video_metrics import parse_fps_fraction, video_stream_metrics
 
 
@@ -44,16 +45,12 @@ def run_ffprobe(path: Path) -> dict:
             "         macOS:   brew install ffmpeg\n"
             "         Windows: winget install Gyan.FFmpeg\n"
             "         Linux:   sudo apt install ffmpeg  (or dnf/pacman/zypper/apk)")
+    # Shares the argv + subprocess call with encode_modules.probes (the single
+    # full-metadata probe site); only the FAILURE POLICY differs — that helper
+    # is best-effort (returns None mid-encode), this one fails fast at startup
+    # because the caller has nothing useful to do without source metadata.
     try:
-        proc = subprocess.run(
-            ["ffprobe", "-v", "error", "-print_format", "json",
-             "-show_format", "-show_streams", str(path)],
-            capture_output=True, text=True, encoding="utf-8",
-            # Generous ceiling: a healthy probe returns in well under a second,
-            # so this only trips on a wedged ffprobe (corrupt source / dead
-            # mount) — better a clear error than an indefinite hang at startup.
-            timeout=120,
-        )
+        proc = run_ffprobe_json(path)
     except subprocess.TimeoutExpired:
         sys.exit(f"ffprobe timed out after 120s probing {path} "
                  "(corrupt source or unresponsive storage?)")

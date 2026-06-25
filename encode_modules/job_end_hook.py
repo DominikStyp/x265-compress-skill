@@ -24,12 +24,11 @@ KeyError.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 from typing import Callable, Optional
 
-from .hook_logging import record_hook_outcome
+from .hook_base import env_float, env_str, record_hook_outcome, run_hook_command
 
 
 HOOK_TIMEOUT_SEC = 30.0
@@ -77,46 +76,21 @@ class JobEndHook:
         failure/timeout/non-zero exit, else None. NEVER raises."""
         if self._command is None:
             return None
-        env = dict(os.environ)
-        env.update(self._build_env(
-            status=status, stop_reason=stop_reason, stop_detail=stop_detail,
-            crf=crf, crf_retry_chain=crf_retry_chain,
-            output=output, output_bytes_final=output_bytes_final,
-            source_bytes=source_bytes,
-            output_bytes_projected=output_bytes_projected,
-            output_bytes_threshold=output_bytes_threshold,
-            wall_seconds=wall_seconds, pct_saved=pct_saved,
-        ))
-        try:
-            proc = self._runner(
-                self._command, env=env, timeout=self._timeout,
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-            )
-        except subprocess.TimeoutExpired:
-            self._log("timeout")
-            return (f"  ! on_job_end hook timed out after "
-                    f"{self._timeout:g}s")
-        except (OSError, ValueError, subprocess.SubprocessError) as e:
-            # Same exhaustive catch as ChunkHook.fire — fire() must not raise
-            # out of the flush path, where a SystemExit or atexit frame is
-            # often already unwinding.
-            self._log("spawn-error", f"{type(e).__name__}: {e}")
-            return (f"  ! on_job_end hook failed: "
-                    f"{type(e).__name__}: {e}")
-        rc = getattr(proc, "returncode", 0)
-        if rc:
-            tail = (getattr(proc, "stderr", "") or "").strip().replace("\n", " ")
-            self._log(f"exited {rc}", tail[-500:])
-            return (f"  ! on_job_end hook exited {rc}"
-                    + (f": {tail[-200:]}" if tail else ""))
-        self._log("ok")
-        return None
-
-    def _log(self, outcome: str, stderr_tail: str = "") -> None:
-        """Persist this fire's outcome to the durable hook log. No-raise."""
-        self._event_log(source=self._source, event=HOOK_NAME,
-                        command=self._command, outcome=outcome,
-                        stderr_tail=stderr_tail)
+        return run_hook_command(
+            command=self._command,
+            env_overrides=self._build_env(
+                status=status, stop_reason=stop_reason, stop_detail=stop_detail,
+                crf=crf, crf_retry_chain=crf_retry_chain,
+                output=output, output_bytes_final=output_bytes_final,
+                source_bytes=source_bytes,
+                output_bytes_projected=output_bytes_projected,
+                output_bytes_threshold=output_bytes_threshold,
+                wall_seconds=wall_seconds, pct_saved=pct_saved,
+            ),
+            timeout=self._timeout, runner=self._runner,
+            event_log=self._event_log, source=self._source,
+            hook_name=HOOK_NAME,
+        )
 
     def _build_env(self, *,
                    status: str, stop_reason: str, stop_detail: str,
@@ -139,21 +113,13 @@ class JobEndHook:
             "X265_JOB_STOP_DETAIL": stop_detail,
             "X265_SOURCE": str(self._source),
             "X265_WORKDIR": str(self._workdir),
-            "X265_CRF": "" if crf is None else str(crf),
+            "X265_CRF": env_str(crf),
             "X265_CRF_RETRY_CHAIN": crf_retry_chain,
             "X265_OUTPUT": str(output) if output else "",
-            "X265_OUTPUT_BYTES_FINAL": (
-                "" if output_bytes_final is None else str(output_bytes_final)),
-            "X265_SOURCE_BYTES": (
-                "" if source_bytes is None else str(source_bytes)),
-            "X265_OUTPUT_BYTES_PROJECTED": (
-                "" if output_bytes_projected is None
-                else str(output_bytes_projected)),
-            "X265_OUTPUT_BYTES_THRESHOLD": (
-                "" if output_bytes_threshold is None
-                else str(output_bytes_threshold)),
-            "X265_WALL_SECONDS": (
-                "" if wall_seconds is None else f"{wall_seconds:.2f}"),
-            "X265_PCT_SAVED": (
-                "" if pct_saved is None else f"{pct_saved:.2f}"),
+            "X265_OUTPUT_BYTES_FINAL": env_str(output_bytes_final),
+            "X265_SOURCE_BYTES": env_str(source_bytes),
+            "X265_OUTPUT_BYTES_PROJECTED": env_str(output_bytes_projected),
+            "X265_OUTPUT_BYTES_THRESHOLD": env_str(output_bytes_threshold),
+            "X265_WALL_SECONDS": env_float(wall_seconds),
+            "X265_PCT_SAVED": env_float(pct_saved),
         }

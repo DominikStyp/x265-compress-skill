@@ -15,7 +15,6 @@ import io
 import queue
 import sys
 import threading
-import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -26,16 +25,7 @@ import encode_modules.encode_parallel as ep  # noqa: E402
 import encode_modules.encode_serial as es  # noqa: E402
 from encode_modules.chunk_hook import ChunkHook  # noqa: E402
 from encode_modules.display import ParallelDisplay  # noqa: E402
-
-
-class _RecordingRunner:
-    def __init__(self, returncode: int = 0):
-        self.returncode = returncode
-        self.calls: list[tuple] = []
-
-    def __call__(self, args, **kwargs):
-        self.calls.append((args, kwargs))
-        return types.SimpleNamespace(returncode=self.returncode, stderr="")
+from tests._helpers import RecordingRunner as _RecordingRunner  # noqa: E402
 
 
 def _ctx(display, workdir, chunk, hook):
@@ -130,6 +120,11 @@ class _FakePopen:
                     Path(tok).write_bytes(b"x")
 
     def wait(self):
+        return _FakePopen.rc
+
+    def poll(self):
+        # The encoder's reap-finally checks poll(); these fakes are only polled
+        # post-wait, so report the final exit code (a finished proc, not None).
         return _FakePopen.rc
 
 

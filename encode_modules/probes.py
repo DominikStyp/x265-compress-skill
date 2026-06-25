@@ -26,6 +26,29 @@ from formatting import format_hms
 # probe, while still bounding what would otherwise be an unrecoverable hang.
 _PROBE_TIMEOUT_S = 120
 
+# Full-metadata ffprobe argv (everything after the "ffprobe" program name and
+# before the path). Single source of truth: both this module's best-effort
+# ``probe_full`` and ``compress_modules.probe.run_ffprobe`` (which exits the
+# process on failure) build the SAME probe — only their failure POLICY differs,
+# so they share the argv + the subprocess call here and each applies its own
+# policy to the result.
+_FFPROBE_FULL_ARGS = ["-v", "error", "-print_format", "json",
+                      "-show_format", "-show_streams"]
+
+
+def run_ffprobe_json(path: Path, *,
+                     timeout_s: int = _PROBE_TIMEOUT_S
+                     ) -> subprocess.CompletedProcess:
+    """Run the full-metadata (format + streams) ffprobe and return the raw
+    ``CompletedProcess`` (stdout is JSON text). Raises ``TimeoutExpired`` on a
+    wedged probe; does NOT inspect the return code or parse the JSON — the
+    caller applies its own failure policy (best-effort None vs. fail-fast
+    ``sys.exit``). The single subprocess site for the full-metadata probe."""
+    return subprocess.run(
+        ["ffprobe", *_FFPROBE_FULL_ARGS, str(path)],
+        capture_output=True, text=True, encoding="utf-8", timeout=timeout_s,
+    )
+
 
 def fmt_dur(seconds: float) -> str:
     """Seconds → 'H:MM:SS'. Re-exported here (delegating to the canonical
@@ -58,7 +81,12 @@ def probe_duration_or_none(path: Path, *,
         return None
     try:
         d = json.loads(r.stdout)["format"].get("duration")
-    except Exception:
+    except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+        # Best-effort: unparseable JSON, no "format" key, or "format" isn't a
+        # dict → treat as "no duration". (Probe helpers in this module catch
+        # broadly *by design* — a failed metadata probe must never abort an
+        # hours-long encode — but we name the expected failure modes rather
+        # than a bare `except`.)
         return None
     if d is None:
         return None
@@ -81,21 +109,17 @@ def probe_duration(path: Path, *, timeout_s: int = _PROBE_TIMEOUT_S) -> float:
 
 def probe_full(path: Path) -> dict | None:
     """ffprobe a file and return parsed format + streams JSON, or None on
-    failure (incl. timeout)."""
+    failure (incl. timeout). Best-effort: the in-encode callers must degrade
+    gracefully, never abort, on a bad probe."""
     try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "error", "-print_format", "json",
-             "-show_format", "-show_streams", str(path)],
-            capture_output=True, text=True, encoding="utf-8",
-            timeout=_PROBE_TIMEOUT_S,
-        )
+        r = run_ffprobe_json(path)
     except subprocess.TimeoutExpired:
         return None
     if r.returncode != 0:
         return None
     try:
         return json.loads(r.stdout)
-    except Exception:
+    except json.JSONDecodeError:
         return None
 
 

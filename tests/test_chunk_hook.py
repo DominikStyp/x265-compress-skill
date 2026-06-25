@@ -10,31 +10,13 @@ import os
 import subprocess
 import sys
 import tempfile
-import types
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from encode_modules.chunk_hook import ChunkHook, fire_for_chunk  # noqa: E402
-
-
-class _RecordingRunner:
-    """Stand-in for subprocess.run: records calls, returns a fake completed
-    process, or raises a preset exception — so tests never spawn a process."""
-
-    def __init__(self, returncode: int = 0, stderr: str = "", raises=None):
-        self.returncode = returncode
-        self.stderr = stderr
-        self.raises = raises
-        self.calls: list[tuple] = []
-
-    def __call__(self, args, **kwargs):
-        self.calls.append((args, kwargs))
-        if self.raises is not None:
-            raise self.raises
-        return types.SimpleNamespace(returncode=self.returncode,
-                                     stderr=self.stderr)
+from tests._helpers import RecordingRunner as _RecordingRunner  # noqa: E402
 
 
 def _hook(command, runner, *, total=12, timeout=30.0,

@@ -36,9 +36,17 @@ class _FakeFF:
         self._part.write_bytes(b"PARTIAL-ENCODED-BYTES")
         return 1  # encode failure
 
+    def poll(self):
+        # Already-exited (the encoder's reap-finally checks poll()): a finished
+        # proc returns its exit code, never None.
+        return 1
+
 
 class _FakeProg:
     def wait(self):
+        return 0
+
+    def poll(self):
         return 0
 
 

@@ -80,30 +80,53 @@ def _encode_one_chunk_with_display(slot: int, chunk: Path, workdir: Path,
         text=True, encoding="utf-8", errors="replace",
         **low_priority_popen_kwargs(),
     )
-    display.register_proc(slot, proc)
+    # Own the Popen's teardown from the moment it exists. The progress read
+    # loop below can raise (a decode error on a corrupt -progress stream, a
+    # KeyboardInterrupt landing in the worker thread, slot_progress raising) —
+    # and a Popen, unlike subprocess.run, is NOT reaped when the loop unwinds.
+    # Without this finally the ffmpeg child kept encoding full-speed, orphaned,
+    # for the rest of a multi-hour run (the Job Object / lifetime group only
+    # reaps it at process exit). Mirrors quality_libvmaf's teardown. Wrapping
+    # register_proc too closes the spawn↔register gap: if register_proc itself
+    # raises, the child is still reaped.
+    try:
+        display.register_proc(slot, proc)
 
-    state: dict[str, str] = {}
-    assert proc.stdout is not None
-    for raw in proc.stdout:
-        line = raw.strip()
-        if "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        state[k] = v
-        if k == "progress":
-            out_time_s, frame = _parse_progress_state(state)
-            display.slot_progress(
-                slot,
-                out_time_s=out_time_s,
-                frame=frame,
-                fps=state.get("fps", "?"),
-                speed=state.get("speed", "?"),
-            )
+        state: dict[str, str] = {}
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            line = raw.strip()
+            if "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            state[k] = v
+            if k == "progress":
+                out_time_s, frame = _parse_progress_state(state)
+                display.slot_progress(
+                    slot,
+                    out_time_s=out_time_s,
+                    frame=frame,
+                    fps=state.get("fps", "?"),
+                    speed=state.get("speed", "?"),
+                )
 
-    rc = proc.wait()
-    elapsed = time.monotonic() - start
-    err = (proc.stderr.read() if proc.stderr else "") or ""
-    display.unregister_proc(slot)
+        rc = proc.wait()
+        elapsed = time.monotonic() - start
+        err = (proc.stderr.read() if proc.stderr else "") or ""
+    finally:
+        # On the normal path proc has already exited (poll() != None) so this
+        # is a no-op; on an unwinding exception it terminates the still-running
+        # encoder. Guard the teardown so a terminate()/wait() that itself
+        # raises (Windows handle race) can't mask the original exception.
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            except OSError:
+                pass
+        display.unregister_proc(slot)
 
     if rc != 0:
         # NEVER unlink the .part on failure — encoded bytes are user data.

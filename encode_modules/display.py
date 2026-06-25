@@ -32,7 +32,6 @@ import subprocess
 import sys
 import threading
 import time
-from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -45,7 +44,17 @@ from platform_compat import (
 from ._sample_window import select_window_endpoints
 from .finish_signal import FINISH_FILENAME, FinishSignal
 from .probes import probe_duration
+from .slot_state import SlotState
+# The control-surface / projection / choke logic was split into these sibling
+# modules to keep this file under the 500-line cap; the methods below are thin
+# delegates. Imported at top level (not lazily inside each method) because none
+# of them import `display` at runtime — pause_control / size_projection don't
+# import it at all, and choke_detection imports ParallelDisplay only under
+# TYPE_CHECKING — so there is no import cycle to dodge.
+from . import choke_detection
 from . import display_render as render
+from . import pause_control
+from . import size_projection
 
 
 # Re-export for callers that previously read these from the class. Module-level
@@ -116,7 +125,7 @@ class ParallelDisplay:
         self.completed = 0  # done *during this run*
         self.start = time.monotonic()
         self.lock = threading.Lock()
-        self.slots: dict[int, dict] = {}  # slot_id -> {chunk, duration, out_time_s, fps, speed}
+        self.slots: dict[int, SlotState] = {}  # slot_id -> live encode state
         self.events: queue.Queue[str] = queue.Queue()
         self.printed_live = False
         # Headless / non-tty output: when stdout isn't a terminal (piped to a
@@ -241,27 +250,17 @@ class ParallelDisplay:
     def slot_start(self, slot: int, chunk_name: str, duration: float,
                   *, label_suffix: str = "") -> None:
         with self.lock:
-            self.slots[slot] = {
-                "chunk": chunk_name,
-                # Optional rendered tag e.g. "AUTO-FIX" when an auto-fix
-                # retry re-occupies a slot. The render layer appends
-                # " ({label_suffix})" after the chunk name.
-                "label_suffix": label_suffix,
-                "duration": max(0.001, duration),
-                "out_time_s": 0.0,
-                "fps": "?",
-                "speed": "?",
-                # Wall-clock start for per-chunk elapsed + ETA. Excludes time
-                # the slot spent paused — `paused_at` accumulates into `paused_s`
-                # on resume, and elapsed = (now - t_start) - paused_s.
-                "t_start": time.monotonic(),
-                "paused_s": 0.0,
-                "paused_at": None,
-                # Rolling (monotonic_t, out_time_s) samples for delta-based
-                # choke detection. Bounded deque keeps memory constant per
-                # slot; check_choke trims by time when reading.
-                "out_time_samples": deque(maxlen=256),
-            }
+            # label_suffix: optional rendered tag e.g. "AUTO-FIX" when an
+            # auto-fix retry re-occupies a slot. t_start excludes paused time
+            # (paused_at accumulates into paused_s on resume; elapsed =
+            # (now - t_start) - paused_s). out_time_samples is the bounded
+            # rolling deque check_choke trims by time when reading.
+            self.slots[slot] = SlotState(
+                chunk=chunk_name,
+                label_suffix=label_suffix,
+                duration=max(0.001, duration),
+                t_start=time.monotonic(),
+            )
 
     def slot_progress(self, slot: int, **fields) -> None:
         """Apply a progress update from ffmpeg's `-progress -` stream.
@@ -277,19 +276,24 @@ class ParallelDisplay:
             s = self.slots.get(slot)
             if s is None:
                 return
-            s.update(fields)
+            # Only the recognised progress fields are applied (unknown keys are
+            # ignored rather than silently stashed) — the typed slot is the
+            # single definition of what a slot carries.
+            if "fps" in fields:
+                s.fps = fields["fps"]
+            if "speed" in fields:
+                s.speed = fields["speed"]
+            if "frame" in fields:
+                s.frame = int(fields.get("frame", 0) or 0)
             if "out_time_s" in fields:
-                samples = s.get("out_time_samples")
-                if samples is not None:
-                    samples.append((
-                        time.monotonic(),
-                        float(fields["out_time_s"]),
-                        int(fields.get("frame", 0) or 0),
-                    ))
-                    live_speed, live_fps = _compute_live_rates_from_samples(
-                        samples)
-                    s["live_speed"] = live_speed
-                    s["live_fps"] = live_fps
+                s.out_time_s = float(fields["out_time_s"])
+                s.out_time_samples.append((
+                    time.monotonic(),
+                    s.out_time_s,
+                    s.frame,
+                ))
+                s.live_speed, s.live_fps = _compute_live_rates_from_samples(
+                    s.out_time_samples)
 
     def slot_done(self, slot: int, chunk_name: str, elapsed: float,
                   chunk_duration: float = 0.0) -> None:
@@ -346,23 +350,18 @@ class ParallelDisplay:
     # / check_choke below.
 
     def toggle_pause(self, slot: int) -> str:
-        from . import pause_control
         return pause_control.toggle_pause(self, slot)
 
     def pause_all(self) -> list[str]:
-        from . import pause_control
         return pause_control.pause_all(self)
 
     def resume_all(self) -> list[str]:
-        from . import pause_control
         return pause_control.resume_all(self)
 
     def sync_file_pause(self) -> None:
-        from . import pause_control
         return pause_control.sync_file_pause(self)
 
     def move_focus(self, delta: int) -> None:
-        from . import pause_control
         return pause_control.move_focus(self, delta)
 
     def toggle_finish(self) -> str:
@@ -383,20 +382,17 @@ class ParallelDisplay:
         to size_projection.compute_projection — kept thin to honor the
         500-line module cap. The projection cache and every input still live
         on this instance; see that module for the math + returned keys."""
-        from . import size_projection
         return size_projection.compute_projection(self)
 
     def check_choke(self) -> Optional[tuple[int, str]]:
         """Delegate to choke_detection.check_choke — kept thin to honor the
         500-line module cap. See that module for the algorithm + tunables."""
-        from . import choke_detection
         return choke_detection.check_choke(self)
 
     def check_threshold(self) -> None:
         """Project output size and abort the encode if it exceeds the user's
         threshold. Thin delegate to size_projection.check_threshold — kept
         thin to honor the 500-line module cap; see that module."""
-        from . import size_projection
         return size_projection.check_threshold(self)
 
     # --- rendering (called from a single render thread) ---
@@ -430,7 +426,7 @@ class ParallelDisplay:
             sys.stdout.write("\033[K" + evt + "\n")
 
         with self.lock:
-            slots = {k: dict(v) for k, v in self.slots.items()}
+            slots = {k: v.copy() for k, v in self.slots.items()}
             paused = set(self.paused_slots)
             focused = self.focused_slot
             completed_now = self.completed

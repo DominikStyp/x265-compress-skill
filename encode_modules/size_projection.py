@@ -53,7 +53,7 @@ def compute_projection(display) -> dict:
             pass
 
     with display.lock:
-        active_source_s = sum(s.get("out_time_s", 0)
+        active_source_s = sum(s.out_time_s
                               for s in display.slots.values())
         completed_s = display.completed_duration_sum
     encoded_s = completed_s + active_source_s
