@@ -71,6 +71,17 @@ def hooks_sidecar_path(source: Path) -> Path:
     return logs_dir(source.parent) / f"{source.stem}.hooks.json"
 
 
+def hooks_log_path(source: Path) -> Path:
+    """Durable, append-only log of every hook FIRE outcome (one JSONL line
+    per fire). Sibling of ``hooks_sidecar_path`` — keyed on the SOURCE stem so
+    a job's hook config (``<stem>.hooks.json``) and its hook event log
+    (``<stem>.hooks.log``) sit next to each other under ``logs/``. Added in
+    v1.20.0 so a webhook failure (Pushbullet 400, DNS error, timeout, non-zero
+    exit, un-spawnable script) is recorded instead of scrolling off the
+    terminal unrecorded."""
+    return logs_dir(source.parent) / f"{source.stem}.hooks.log"
+
+
 def preflight_cache_path(source: Path) -> Path:
     """Preflight cache. Keyed on the source's FULL name (incl. extension)
     so two sources sharing a stem but differing only in extension

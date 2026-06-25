@@ -58,19 +58,54 @@ Tokens):
 
 Exit 0 on success; non-zero on a missing token or a transport/API error,
 so the encoder logs a one-line warning (it never aborts the encode over
-a hook).
+a hook). When ``X265_NOTIFY_LOG`` (an optional path) is set, a transport
+FAILURE is also appended as one secret-free line to that file, so a webhook
+failure is recorded even when this script runs standalone (outside the
+queue) or the encoder's stderr capture is bypassed.
+
+IMPORTANT — Pushbullet free-tier cap (the motivation for shipping the ntfy
+notifier alongside this one): a free Pushbullet account (no Pro
+subscription) is limited to **500 pushes per MONTH**. It is a per-month
+ROLLING counter — it does NOT reset on demand, only when the month rolls
+over (or by buying Pro). Once exhausted, every push fails opaquely with
+``HTTP 400 {"error":{"code":"pushbullet_pro_required", ...}}`` and there is
+NO header reporting the remaining monthly count (the ``x-ratelimit-*``
+headers are a separate short-term API throttle, unrelated to the 500/month
+cap). Wiring this at ``on_chunk_done`` makes it far worse — a 10-chunk job
+burns ~10 pushes, exhausting the cap in a couple dozen jobs. So on
+Pushbullet: prefer ``on_job_end`` (one push per finished file, and the only
+event carrying the size-stop banner) and leave ``on_chunk_done`` OFF. If you
+hit the cap, switch to ``examples/notify_ntfy.py`` (ntfy.sh: ~250/DAY, no
+monthly lockout) — see ``docs/AGENT_QUEUE_RECIPES.md``.
 """
 from __future__ import annotations
 
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Mapping
 
 API_URL = "https://api.pushbullet.com/v2/pushes"
 TIMEOUT_SEC = 20
+
+
+def _append_notify_log(path: str | None, *, event: str, outcome: str) -> None:
+    """Best-effort append of ONE secret-free line recording a transport
+    failure, when X265_NOTIFY_LOG points somewhere. Never raises and never
+    writes the token/device (only the event + the error class/message).
+    No-op on an empty/unset path."""
+    if not path:
+        return
+    try:
+        line = (f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\t"
+                f"pushbullet\t{event}\t{outcome}\n")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except OSError:
+        pass
 
 
 def build_payload(env: Mapping[str, str]) -> dict:
@@ -214,12 +249,16 @@ def _source_basename(env: Mapping[str, str]) -> str:
 
 
 def main() -> int:
+    log_path = os.environ.get("X265_NOTIFY_LOG", "").strip()
+    event = os.environ.get("X265_HOOK_EVENT", "chunk-done")
     token = os.environ.get("PUSHBULLET_TOKEN")
     if not token:
         # Fail loud (but cheaply) — the encoder logs this one line and
         # keeps encoding. The token value is never printed.
         print("pushbullet: PUSHBULLET_TOKEN is not set in the environment",
               file=sys.stderr)
+        _append_notify_log(log_path, event=event,
+                           outcome="PUSHBULLET_TOKEN unset")
         return 2
 
     data = json.dumps(build_payload(os.environ)).encode("utf-8")
@@ -231,11 +270,15 @@ def main() -> int:
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT_SEC) as resp:
             if resp.status >= 300:
-                print(f"pushbullet: HTTP {resp.status}", file=sys.stderr)
+                outcome = f"HTTP {resp.status}"
+                print(f"pushbullet: {outcome}", file=sys.stderr)
+                _append_notify_log(log_path, event=event, outcome=outcome)
                 return 1
     except (urllib.error.URLError, OSError) as e:
         # Never print the token; only the error type/message.
-        print(f"pushbullet: {type(e).__name__}: {e}", file=sys.stderr)
+        outcome = f"{type(e).__name__}: {e}"
+        print(f"pushbullet: {outcome}", file=sys.stderr)
+        _append_notify_log(log_path, event=event, outcome=outcome)
         return 1
     return 0
 

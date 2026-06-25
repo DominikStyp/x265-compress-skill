@@ -28,9 +28,13 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Optional
 
+from .hook_logging import record_hook_outcome
+
 
 HOOK_TIMEOUT_SEC = 30.0
 HOOK_EVENT = "file-complete"
+# Config-key name used in the durable hook log (logs/<stem>.hooks.log).
+HOOK_NAME = "on_file_complete"
 
 
 class FileCompleteHook:
@@ -42,12 +46,14 @@ class FileCompleteHook:
     def __init__(self, command: Optional[list[str]], *,
                  source: Path, workdir: Path,
                  runner: Callable[..., object] = subprocess.run,
-                 timeout: float = HOOK_TIMEOUT_SEC) -> None:
+                 timeout: float = HOOK_TIMEOUT_SEC,
+                 event_log: Callable[..., object] = record_hook_outcome) -> None:
         self._command = list(command) if command else None
         self._source = source
         self._workdir = workdir
         self._runner = runner
         self._timeout = timeout
+        self._event_log = event_log
 
     @property
     def enabled(self) -> bool:
@@ -87,18 +93,27 @@ class FileCompleteHook:
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
             )
         except subprocess.TimeoutExpired:
+            self._log("timeout")
             return (f"  ! on_file_complete hook timed out after "
                     f"{self._timeout:g}s")
         except (OSError, ValueError, subprocess.SubprocessError) as e:
+            self._log("spawn-error", f"{type(e).__name__}: {e}")
             return (f"  ! on_file_complete hook failed: "
                     f"{type(e).__name__}: {e}")
         rc = getattr(proc, "returncode", 0)
         if rc:
-            tail = (getattr(proc, "stderr", "") or "").strip()
-            tail = tail.replace("\n", " ")[-200:]
+            tail = (getattr(proc, "stderr", "") or "").strip().replace("\n", " ")
+            self._log(f"exited {rc}", tail[-500:])
             return (f"  ! on_file_complete hook exited {rc}"
-                    + (f": {tail}" if tail else ""))
+                    + (f": {tail[-200:]}" if tail else ""))
+        self._log("ok")
         return None
+
+    def _log(self, outcome: str, stderr_tail: str = "") -> None:
+        """Persist this fire's outcome to the durable hook log. No-raise."""
+        self._event_log(source=self._source, event=HOOK_NAME,
+                        command=self._command, outcome=outcome,
+                        stderr_tail=stderr_tail)
 
     def _build_env(self, *,
                    output: Path,

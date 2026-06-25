@@ -3,6 +3,72 @@
 All notable changes to this skill are recorded here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.20.0] — 2026-06-25
+
+Notification-resilience release, implementing the
+`SKILL_UPDATE_REQUEST_2026-06-25_ntfy-and-recipes` report (CR-1, CR-2, CR-4,
+CR-5 in full; CR-3 as documentation only — see below). Motivation: on a free
+Pushbullet account every push began failing opaquely with `HTTP 400
+pushbullet_pro_required` once the **500-pushes/month** cap was hit, and the
+failures were never written to disk so they were undiagnosable. Verified by the
+full test suite (707 tests) + two independent adversarial reviewers.
+
+### Added
+- **ntfy.sh notifier** — `examples/notify_ntfy.py`, a stdlib-only,
+  multi-event notifier mirroring `notify_pushbullet.py`'s contract
+  (`X265_HOOK_EVENT` dispatch over chunk-done / job-end / file-complete /
+  queue-item-end). Config (`NTFY_TOPIC` required; `NTFY_SERVER` / `NTFY_TOKEN`
+  optional) comes from the environment, never the file. ntfy's free tier is
+  ~250 notifications/**day** with no monthly lockout, is open-source +
+  self-hostable, and needs no account/token for a public topic. Metadata rides
+  in HTTP headers (`Title` ASCII-sanitized — headers are latin-1 — with emoji
+  as `Tags` shortcodes; `Priority` 1–5). chunk-done (ok) is sent at low
+  Priority 2 so progress pings don't buzz the phone; failures + size-limit at
+  Priority 4.
+- **Primary + fallback notifier dispatcher** — `examples/notify_dispatch.py`,
+  a stdlib-only wrapper that runs an ordered list of notifier scripts and stops
+  at the first success (exit 0 if any delivered, non-zero only if all failed).
+  Chain configurable via `X265_NOTIFY_CHAIN` (OS-path-separated); defaults to
+  `notify_ntfy.py` → `notify_pushbullet.py`. A notifier that can't be spawned
+  counts as a failure and the chain continues.
+- **Durable hook-event log** — every hook fire (all four events) now records
+  one JSONL line to `logs/<source>.hooks.log` (timestamp, event, argv, outcome
+  `ok`/`exited N`/`timeout`/`spawn-error`, and the stderr tail — widened to
+  ~500 chars — on failure). Secret-free by construction: the environment (where
+  `PUSHBULLET_TOKEN` / `NTFY_TOKEN` live) is never logged. So an opaque webhook
+  failure is diagnosable after the fact instead of scrolling off the terminal.
+  Implemented as a shared `encode_modules/hook_logging.py` helper used by all
+  four hook classes — the three in-encoder hooks (chunk-done, job-end,
+  file-complete) and the queue-side `on_queue_item_end` hook (DRY) — plus
+  `log_paths.hooks_log_path`. Logging never raises and never aborts an encode.
+- **`X265_NOTIFY_LOG`** — when set, each shipped notifier appends its own
+  secret-free failure line to that path, recording webhook failures even when a
+  notifier runs standalone (outside the queue).
+
+### Changed
+- **OS-aware default encoding-history root (CR-4).** The hardcoded
+  `C:\_MOJE\other\CUTTED` default is correct only on Windows; on POSIX it would
+  land as a single backslash-named file in the CWD. The default is now
+  `~/x265-encoding` on macOS/Linux and unchanged on Windows.
+  `CLAUDE_ENCODING_HISTORY_PATH` still overrides verbatim on both.
+- **Pushbullet example documents the free-tier cap.** `notify_pushbullet.py`'s
+  docstring and the recipes doc now explain the 500-pushes/month rolling cap,
+  the `pushbullet_pro_required` 400 symptom, "prefer `on_job_end`, leave
+  `on_chunk_done` OFF on Pushbullet", and the ntfy alternative.
+- **Docs.** README (Features + Data-locations + Layout), `docs/AGENT_QUEUE_RECIPES.md`
+  (Recipes 10–11, per-transport `on_chunk_done` guidance, an Environment-variables
+  table documenting `CLAUDE_ENCODING_NO_NICE` + `CLAUDE_ENCODING_HISTORY_PATH`,
+  and where hook errors are logged), and `references/x265-tuning.md` (how
+  `pick_crf` interacts with the size gate + `retry_with_bigger_crf` / `crf_max`)
+  all updated.
+- **CR-3 (encode-parameter recipes): documentation only.** The report flagged
+  changing encode defaults as the highest-risk CR and asked for VMAF/size
+  evidence before any default change. No defaults were changed and no new encode
+  options/presets were added; the size-gate↔CRF interaction and the
+  size-constrained-4K starting-CRF guidance are documented instead (in
+  `references/x265-tuning.md` + the recipes doc). The `crf_4k_bonus`/profiles
+  ideas remain open pending benchmarks.
+
 ## [1.19.2] — 2026-06-10
 
 Implements every improvement proposal from the v1.19.1 full-application

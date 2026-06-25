@@ -114,3 +114,34 @@ HLG sources work without extra metadata (HLG is self-describing).
 - **No GPU/ASIC encoding (NVENC, QSV, AMF, Apple VideoToolbox).** Hardware HEVC encoders are 3-5× faster and far lower-power, but produce noticeably worse quality at the same bitrate and aren't CRF-true. They're the right call for *playback* transcodes — and the wrong call for an archive you may delete originals against. On Apple Silicon, `hevc_videotoolbox` is especially tempting for its speed/efficiency; resist it for archival and keep the software libx265 default. The user explicitly asked for CPU x265.
 - **No denoising, no scaling, no deinterlacing.** Out of scope — the user wants compression, not a filter chain. If a specific source needs `-vf yadif` (deinterlace) or `-vf hqdn3d` (denoise), add it manually after generation.
 - **No `--tune psnr` or `--tune ssim`.** Both *lower* visual quality at the same CRF; they exist for benchmark cheating, not real viewing.
+
+## CRF auto-pick vs. the size gate and retry chain (tuning for a budget)
+
+`pick_crf()` (`compress_modules/plan.py`) chooses a starting CRF from the
+source's bits-per-pixel, then `plan_encode()` adds **+1 for 4K** (`width ≥
+3840`) because detail is denser per pixel there, and floors HEVC/AV1 sources at
+`max(crf, 22)` (already-efficient codecs need more headroom). That value is a
+quality **floor** — the *lowest* CRF the encoder will start at.
+
+In queue mode the **size gate drives CRF up from that floor.** When
+`max_size_percent` is set and `retry_with_bigger_crf` is on, a job whose
+projected output exceeds the gate is aborted cheaply (the size-projection guard
+stops it at ~5 % progress) and re-encoded at `crf + crf_step`, repeating until
+it fits or `crf_max` is reached (then it ends as
+`stopped-threshold-crf-exhausted`). So for 4K under a tight budget (e.g.
+`max_size_percent ≤ 85`) the *effective* starting CRF users converge to is
+often higher than the recipe's auto value — the shipped 4K CRFs frequently
+produce output larger than an 85 % gate, forcing a retry chain.
+
+**Practical guidance:** if you routinely encode size-constrained 4K, set a
+higher starting `crf` (≈23 is a common convergence point on a live-action 4K
+library at `max_size_percent: 85`) rather than only raising `crf_max`. Raising
+the starting CRF reaches the target in fewer retry passes; raising only
+`crf_max` just lets a too-low start climb further, wasting rejected passes. The
+auto floor is deliberately conservative (quality-first) and is **not** changed
+by default — tuning for size is a per-job / `defaults` `crf` override, not a
+silent default shift.
+
+> The reverse case — a source that's *already* small enough — never triggers
+> the retry chain, so the auto floor stands and you get the highest quality the
+> budget allows. The gate only ever raises CRF, never lowers it.

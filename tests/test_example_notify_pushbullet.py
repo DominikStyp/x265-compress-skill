@@ -453,5 +453,40 @@ class QualityThresholdJobEndTest(unittest.TestCase):
         self.assertIn("QUALITY", p["title"])
 
 
+class PushbulletCapDocumentedTest(unittest.TestCase):
+    """v1.20.0: the 500-pushes/month free-tier cap (and its opaque
+    `pushbullet_pro_required` 400 symptom) must be documented in the module
+    docstring so users understand the failure mode and the ntfy alternative."""
+
+    def test_docstring_warns_about_monthly_cap(self) -> None:
+        text = EXAMPLE.read_text(encoding="utf-8")
+        self.assertIn("500 pushes", text)
+        self.assertIn("pushbullet_pro_required", text)
+        self.assertIn("notify_ntfy.py", text)
+
+
+class NotifyLogHelperTest(unittest.TestCase):
+    """CR-5 item 4: when X265_NOTIFY_LOG is set, a failure appends one
+    secret-free line; unset/empty is a no-op that never raises."""
+
+    def setUp(self) -> None:
+        self.mod = _load()
+
+    def test_failure_line_appended_when_path_set(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            logp = Path(td) / "notify.log"
+            self.mod._append_notify_log(
+                str(logp), event="job-end", outcome="HTTP 400")
+            text = logp.read_text(encoding="utf-8")
+            self.assertIn("pushbullet", text)
+            self.assertIn("job-end", text)
+            self.assertIn("HTTP 400", text)
+
+    def test_empty_path_is_noop(self) -> None:
+        self.mod._append_notify_log("", event="job-end", outcome="x")
+        self.mod._append_notify_log(None, event="job-end", outcome="x")
+
+
 if __name__ == "__main__":
     unittest.main()

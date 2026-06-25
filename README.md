@@ -16,9 +16,27 @@ scripts run standalone from any shell.
 - **Finish after current chunk** — press `f` (or drop a `FINISH` file, for
   headless) to stop gracefully once in-flight chunks complete; halts the queue,
   fully resumable
-- **Chunk-finished hook** — run a command after each chunk (e.g. a Pusher /
-  webhook progress ping); set per file or in the queue `defaults`, context via
-  `X265_*` env vars, best-effort so it never derails the encode
+- **Notification hooks** — run a command at any of four events
+  (`on_chunk_done`, `on_job_end`, `on_file_complete`, `on_queue_item_end`);
+  set per file or in the queue `defaults`, context via `X265_*` env vars,
+  best-effort so it never derails the encode. Three ready-to-copy,
+  stdlib-only notifiers ship in [`examples/`](examples/):
+  [`notify_ntfy.py`](examples/notify_ntfy.py) (ntfy.sh — ~250 notifications/**day**,
+  no account/token needed, self-hostable; the recommended default),
+  [`notify_pushbullet.py`](examples/notify_pushbullet.py) (Pushbullet — note the
+  free tier is capped at **500 pushes/month** and fails opaquely once exhausted),
+  and [`notify_dispatch.py`](examples/notify_dispatch.py) (a "primary +
+  fallback" wrapper: tries ntfy first, falls back to Pushbullet only if it
+  fails). See [docs/AGENT_QUEUE_RECIPES.md](docs/AGENT_QUEUE_RECIPES.md) for
+  which events to wire on which transport.
+- **Durable hook-event log (since v1.20.0)** — every hook fire records one
+  JSONL line (timestamp, event, argv, outcome `ok`/`exited N`/`timeout`/
+  `spawn-error`, and the stderr tail on failure) to
+  `logs/<source>.hooks.log`, so a webhook failure (e.g. a Pushbullet 400) is
+  diagnosable after the fact instead of scrolling off the terminal. Secret-free
+  by construction (the environment, where tokens live, is never logged). The
+  notifier examples additionally append their own failure line to
+  `$X265_NOTIFY_LOG` when that env var points somewhere, covering standalone runs.
 - **Source corruption guard** — pre-flight bitstream scan plus an opt-in
   surgical patch that re-encodes JUST the broken h264 GOPs
 - **Choke detection** — per-chunk progress watchdog frees a stuck slot
@@ -54,6 +72,13 @@ scripts run standalone from any shell.
   ffmpeg child. For dedicated encoder machines with no foreground
   workload competing for CPU. Lifecycle plumbing (killpg / Job Object
   KILL_ON_JOB_CLOSE) stays in place regardless.
+- **History-path override** — `CLAUDE_ENCODING_HISTORY_PATH` (env var) sets
+  the exact path of the append-only `encoding_history.jsonl`, verbatim. Use it
+  to redirect the log to a portable location or to share one history file
+  across machines (Dominik's Mac sets it in `run_queue.sh`). With it unset the
+  default is OS-appropriate: `C:\_MOJE\other\CUTTED\logs\` on Windows,
+  `~/x265-encoding/logs/` on macOS/Linux (v1.20.0 — before that the Windows
+  literal leaked onto POSIX as a backslash-named file).
 - **DTS-collision auto-recovery** — MPEG-TS roundtrip remux clears the
   one verify failure that doesn't actually mean the video is broken
 - **Queue runner** — JSON queue of jobs, sequential, live-reloadable
@@ -193,10 +218,11 @@ they start in a folder.
 | Per-chunk metrics log (since v1.18.0) | `<video_folder>/logs/<output>.chunk_metrics.jsonl` |
 | Per-encode markdown report | `<video_folder>/logs/<output>.report.md` |
 | Hooks sidecar | `<video_folder>/logs/<source>.hooks.json` (deleted on success) |
+| Hook-event log (since v1.20.0) | `<video_folder>/logs/<source>.hooks.log` — one JSONL line per hook fire (event, argv, outcome, stderr tail on failure); secret-free, never deleted |
 | Queue aggregate report | `<queue_folder>/logs/<queue_stem>_report.md` |
 | Queue state sidecar | `<queue_folder>/logs/<queue_stem>.state.json` |
 | Queue `--json-status` NDJSON (default) | `<queue_folder>/logs/<queue_stem>.json-status.ndjson` (when `--json-status ""` enables the default; explicit `--json-status PATH` is honoured verbatim) |
-| Encoding history JSONL | `<history_root>/logs/encoding_history.jsonl` (override with `CLAUDE_ENCODING_HISTORY_PATH` env var) |
+| Encoding history JSONL | `<history_root>/logs/encoding_history.jsonl` — `<history_root>` is `C:\_MOJE\other\CUTTED` on Windows, `~/x265-encoding` on macOS/Linux (v1.20.0); override the whole path with the `CLAUDE_ENCODING_HISTORY_PATH` env var |
 
 `rm -rf ~/.claude/plugins/x265-compress-skill/` (or `.../skills/...` if
 installed there) removes ONLY the code — your sidecars, reports, history,
@@ -299,7 +325,7 @@ threshold; first temporal chunk is graced):
 | `encode_modules/` | Chunk worker, serial + parallel loops, live display, choke detection, VMAF (`quality_libvmaf.py` for the libvmaf primitives + `quality_guard.py` for the per-chunk threshold worker), history, source guard |
 | `queue_modules/` | Job schema, queue I/O, per-job runner |
 | `references/` | x265 parameter rationale |
-| `examples/` | Copy-paste hook scripts (e.g. `notify_pushbullet.py` for `on_chunk_done`) |
+| `examples/` | Copy-paste, stdlib-only notifier hooks: `notify_ntfy.py` (ntfy.sh), `notify_pushbullet.py` (Pushbullet), `notify_dispatch.py` (primary + fallback). All four hook events supported via `X265_HOOK_EVENT` dispatch |
 
 ## Platform support
 

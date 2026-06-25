@@ -41,24 +41,31 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Optional
 
+from encode_modules.hook_logging import record_hook_outcome
+
 from .queue_status_format import classify_marker, render_queue_summary
 
 
 HOOK_TIMEOUT_SEC = 30.0
 HOOK_EVENT = "queue-item-end"
+# Config-key name used in the durable hook log (logs/<stem>.hooks.log).
+HOOK_NAME = "on_queue_item_end"
 
 
 class QueueItemEndHook:
     """Runs the on_queue_item_end command. `runner` and `timeout` are
     injectable so tests never spawn a real process; the default `runner`
-    is `subprocess.run`."""
+    is `subprocess.run`. `event_log` is the durable-log seam (default the
+    shared `record_hook_outcome`)."""
 
     def __init__(self, command: Optional[list[str]], *,
                  runner: Callable[..., object] = subprocess.run,
-                 timeout: float = HOOK_TIMEOUT_SEC) -> None:
+                 timeout: float = HOOK_TIMEOUT_SEC,
+                 event_log: Callable[..., object] = record_hook_outcome) -> None:
         self._command = list(command) if command else None
         self._runner = runner
         self._timeout = timeout
+        self._event_log = event_log
 
     @property
     def enabled(self) -> bool:
@@ -83,6 +90,7 @@ class QueueItemEndHook:
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
             )
         except subprocess.TimeoutExpired:
+            self._log(source, "timeout")
             return (f"  ! on_queue_item_end hook timed out after "
                     f"{self._timeout:g}s")
         except (OSError, ValueError, subprocess.SubprocessError) as e:
@@ -90,15 +98,25 @@ class QueueItemEndHook:
             # the queue's per-job loop and must never abort it. The NUL-in-
             # argv ValueError from subprocess.run is the motivating case;
             # FileNotFoundError on a missing notifier is the common one.
+            self._log(source, "spawn-error", f"{type(e).__name__}: {e}")
             return (f"  ! on_queue_item_end hook failed: "
                     f"{type(e).__name__}: {e}")
         rc = getattr(proc, "returncode", 0)
         if rc:
-            tail = (getattr(proc, "stderr", "") or "").strip()
-            tail = tail.replace("\n", " ")[-200:]
+            tail = (getattr(proc, "stderr", "") or "").strip().replace("\n", " ")
+            self._log(source, f"exited {rc}", tail[-500:])
             return (f"  ! on_queue_item_end hook exited {rc}"
-                    + (f": {tail}" if tail else ""))
+                    + (f": {tail[-200:]}" if tail else ""))
+        self._log(source, "ok")
         return None
+
+    def _log(self, source: Path, outcome: str, stderr_tail: str = "") -> None:
+        """Persist this fire's outcome to the durable hook log, keyed on the
+        just-finished job's source (so it sits next to that source's other
+        hook logs). No-raise — the injected logger swallows its own errors."""
+        self._event_log(source=source, event=HOOK_NAME,
+                        command=self._command, outcome=outcome,
+                        stderr_tail=stderr_tail)
 
     def _build_env(self, *,
                    status: str,

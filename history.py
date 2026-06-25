@@ -32,41 +32,50 @@ import time
 from pathlib import Path
 
 from encode_modules.probes import probe_duration_or_none
+from platform_compat import IS_WINDOWS
 from video_metrics import bits_per_pixel, video_stream_metrics
 
 # Schema version. Bump when fields are added/removed/semantically changed so
 # downstream analysis can branch on it.
 SCHEMA_VERSION = 1
 
-# Default history root. Sits at the CUTTED root so the log accumulates
-# across queue/batch boundaries. v1.19.0 routes the default INTO a
-# ``logs/`` subdirectory under this root; the env-var override is honoured
-# verbatim so users with explicit paths see no change.
-_DEFAULT_HISTORY_ROOT = Path(r"C:\_MOJE\other\CUTTED")
+# Default history root on Windows — Dominik's CUTTED library root, so the log
+# accumulates across queue/batch boundaries.
+_WINDOWS_HISTORY_ROOT = Path(r"C:\_MOJE\other\CUTTED")
 
 
 def default_history_root() -> Path:
     """Return the directory under which the default history JSONL lives.
     Exposed so callers (the migration helper, run_queue) can compute the
-    legacy path for one-time relocation into ``logs/``."""
-    return _DEFAULT_HISTORY_ROOT
+    legacy path for one-time relocation into ``logs/``.
+
+    OS-aware (v1.20.0): the hardcoded ``C:\\_MOJE\\other\\CUTTED`` is correct
+    only on Windows. On POSIX (macOS/Linux) that literal would land as a
+    single file literally named ``C:\\_MOJE\\other\\CUTTED`` in the CWD — so
+    the POSIX default is ``~/x265-encoding`` instead. Either way
+    ``CLAUDE_ENCODING_HISTORY_PATH`` overrides it verbatim (Dominik's Mac sets
+    that env var in ``run_queue.sh``), so this only affects users who never
+    set the override."""
+    if IS_WINDOWS:
+        return _WINDOWS_HISTORY_ROOT
+    return Path.home() / "x265-encoding"
 
 
 def default_history_path() -> Path:
     """Resolve the canonical history-file path. ``CLAUDE_ENCODING_HISTORY_PATH``
     overrides verbatim (useful for testing or redirecting to a portable
     location). With no override the default is
-    ``<_DEFAULT_HISTORY_ROOT>/logs/encoding_history.jsonl`` (v1.19.0; pre-
-    v1.19.0 sat directly at ``<_DEFAULT_HISTORY_ROOT>/encoding_history.jsonl``
-    — one-shot migration in ``encode_modules.log_paths.migrate_history_root``
-    moves the legacy file the first time the encoder runs)."""
+    ``<default_history_root()>/logs/encoding_history.jsonl`` (v1.19.0; pre-
+    v1.19.0 sat directly at ``<root>/encoding_history.jsonl`` — one-shot
+    migration in ``encode_modules.log_paths.migrate_history_root`` moves the
+    legacy file the first time the encoder runs)."""
     env = os.environ.get("CLAUDE_ENCODING_HISTORY_PATH")
     if env:
         return Path(env)
     # Local import to dodge a circular dep: log_paths imports nothing from
     # history, but several encode_modules imports flow through history.
     from encode_modules.log_paths import history_jsonl_path
-    return history_jsonl_path(_DEFAULT_HISTORY_ROOT)
+    return history_jsonl_path(default_history_root())
 
 
 def append_record(record: dict, *, history_path: Path | None = None) -> None:

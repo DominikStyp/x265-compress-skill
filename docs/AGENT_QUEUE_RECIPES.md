@@ -335,6 +335,146 @@ quality without meaningful shrinkage. See `retry_with_bigger_crf` /
 
 ---
 
+## Recipe 10 — "Notify me via ntfy.sh (no account, no monthly cap)"
+
+Pushbullet's free tier is capped at **500 pushes per month** — a rolling
+counter that only clears on month rollover (or by buying Pro). Once exhausted,
+every push fails opaquely with `HTTP 400 {"error":{"code":
+"pushbullet_pro_required", ...}}`, and there's no header telling you how many
+pushes remain. [`examples/notify_ntfy.py`](../examples/notify_ntfy.py) uses
+[ntfy.sh](https://ntfy.sh) instead: ~250 notifications/**day**, no monthly
+lockout, open-source + self-hostable, and no account or token needed for a
+public topic. Same `X265_HOOK_EVENT` dispatch and the same four events as the
+Pushbullet example.
+
+```json
+{
+  "defaults": {
+    "crf": 22,
+    "parallel": "auto",
+    "resumable": true,
+    "max_size_percent": 85,
+    "on_job_end":     ["python3", "/path/to/examples/notify_ntfy.py"],
+    "on_chunk_done":  ["python3", "/path/to/examples/notify_ntfy.py"]
+  },
+  "jobs": [{"input": "*.mkv"}]
+}
+```
+
+On Windows: `["python", "C:/path/to/examples/notify_ntfy.py"]`. Config comes
+from the environment (the topic is the only "secret" on public ntfy.sh — anyone
+who knows it can read/publish, so make it unguessable):
+
+```sh
+export NTFY_TOPIC=your-unguessable-topic     # required — subscribe to it in the ntfy app
+export NTFY_SERVER=https://ntfy.sh           # optional (self-host = your URL)
+export NTFY_TOKEN=tk_xxxxxxxxxxxx            # optional (protected topics)
+```
+
+ntfy puts metadata in HTTP headers (`Title` / `Tags` / `Priority`) and the
+message in the body. Because HTTP headers are latin-1, the notifier
+ASCII-sanitizes the `Title` and carries the emoji as `Tags` shortcodes instead.
+
+### Which event to wire on which transport
+
+Wire **`on_job_end`** as the always-on baseline on *any* transport: one push
+per finished file, and the only event carrying the size-stop banner. Treat
+`on_chunk_done` as **transport-dependent**:
+
+| Transport | Cap | `on_chunk_done`? |
+|---|---|---|
+| **Pushbullet** | 500/**month** (rolling) | **Leave OFF.** With `segments=10` it's ≈11 pushes/job — the cap is gone in ~22 jobs |
+| **ntfy.sh** | ~250/**day** | Fine to enable. ≈11 pushes/job → ≈22 jobs/day before the daily cap |
+
+`notify_ntfy.py` sends `on_chunk_done` (ok) at **Priority 2 (low)** so progress
+pings don't buzz the phone, while job-end/failure alerts ride at Priority 3–4.
+
+---
+
+## Recipe 11 — "Robust notifications: ntfy with a Pushbullet fallback"
+
+A single transport is a single point of failure (ntfy unreachable, or
+Pushbullet quota exhausted). [`examples/notify_dispatch.py`](../examples/notify_dispatch.py)
+runs an ordered list of notifiers and stops at the first success — exit 0 if
+**any** delivered, non-zero only if **all** failed.
+
+```json
+{
+  "defaults": {
+    "resumable": true,
+    "on_job_end": ["python3", "/path/to/examples/notify_dispatch.py"]
+  },
+  "jobs": [{"input": "*.mp4"}]
+}
+```
+
+Set the transport secrets in the environment (`NTFY_TOPIC` for the primary,
+`PUSHBULLET_TOKEN` for the fallback). The chain defaults to
+`notify_ntfy.py` → `notify_pushbullet.py` resolved next to the dispatcher;
+override it with `X265_NOTIFY_CHAIN` (an `os.pathsep`-separated list of notifier
+script paths — `:` on POSIX, `;` on Windows). Every `X265_*` context var and
+the secrets pass straight through to each child.
+
+---
+
+## Where hook errors are logged
+
+Every hook fire — for **all** four events — records one JSONL line to
+`<video_folder>/logs/<source>.hooks.log` (since v1.20.0):
+
+```json
+{"ts":"2026-06-25T18:03:11Z","event":"on_job_end","command":["python3","/p/notify_pushbullet.py"],"outcome":"exited 1","stderr_tail":"pushbullet: HTTP 400 ..."}
+```
+
+`outcome` is one of `ok` / `exited <rc>` / `timeout` / `spawn-error`; the
+stderr tail (up to ~500 chars) is captured on failure so an opaque webhook
+error like Pushbullet's `pushbullet_pro_required` 400 is recorded instead of
+scrolling off the terminal. The line is **secret-free** — it logs the argv and
+outcome, never the environment, so `PUSHBULLET_TOKEN` / `NTFY_TOKEN` never land
+in the log.
+
+Independently, the shipped notifiers append their own failure line to a file
+named by the optional **`X265_NOTIFY_LOG`** env var (when set) — so a webhook
+failure is recorded even when a notifier runs standalone, outside the queue:
+
+```sh
+export X265_NOTIFY_LOG=/path/to/notify-failures.log
+```
+
+---
+
+## Environment variables
+
+Switches read from the environment (not `queue.json`), useful on dedicated
+encoder hardware and for redirecting logs:
+
+| Env var | Effect | When to use | Default |
+|---|---|---|---|
+| `CLAUDE_ENCODING_NO_NICE` | Any non-empty value skips the idle-priority wrap (`nice -n 19` / `IDLE_PRIORITY_CLASS`) on every ffmpeg child. Lifecycle plumbing (killpg / Job Object) is unaffected | Dedicated encoder machine with no foreground workload competing for CPU (e.g. a Mac running batch encodes) | unset = wrap ON |
+| `CLAUDE_ENCODING_HISTORY_PATH` | Sets the exact path of the append-only `encoding_history.jsonl`, verbatim | Redirect history to a portable location, or share one history file across machines | `C:\_MOJE\other\CUTTED\logs\encoding_history.jsonl` (Windows) / `~/x265-encoding/logs/encoding_history.jsonl` (macOS/Linux) |
+| `NTFY_TOPIC` / `NTFY_SERVER` / `NTFY_TOKEN` | ntfy notifier config (topic required; server/token optional) | With `examples/notify_ntfy.py` | — / `https://ntfy.sh` / none |
+| `PUSHBULLET_TOKEN` / `PUSHBULLET_DEVICE` | Pushbullet notifier config (token required; device optional) | With `examples/notify_pushbullet.py` | — / all devices |
+| `X265_NOTIFY_CHAIN` | `os.pathsep`-separated ordered list of notifier scripts for `notify_dispatch.py` | Customize the primary→fallback order | `notify_ntfy.py` then `notify_pushbullet.py` |
+| `X265_NOTIFY_LOG` | Path the notifier examples append a secret-free failure line to | Capture webhook failures from standalone notifier runs | unset = no notifier-side log |
+
+---
+
+## Size guard ↔ CRF interaction (tuning for a size budget)
+
+The auto-picked starting CRF (`compress_modules/plan.py:pick_crf`) sets a
+quality *floor*; the size gate (`max_size_percent`) drives the effective CRF
+*up* from there. For 4K with a strict size budget (e.g. `max_size_percent ≤ 85`),
+the shipped starting CRF frequently lands above the gate, so
+`retry_with_bigger_crf` escalates `crf` by `crf_step` per pass until it fits —
+meaning the job converges to a CRF higher than the recipe's default after one or
+more rejected (cheap, ~5%-progress) passes. If you routinely encode
+size-constrained 4K, **raise the starting `crf`** (≈23 is a common convergence
+point) rather than only raising `crf_max` — that reaches the target in fewer
+retry passes. See [`references/x265-tuning.md`](../references/x265-tuning.md)
+for the full rationale.
+
+---
+
 ## Per-job keys (full schema)
 
 Any key in this table can appear in `defaults` (applies to all jobs)
